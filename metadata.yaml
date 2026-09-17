@@ -4,3 +4,4 @@ desc: 内置轻量 WebDAV 服务，支持 Obsidian Remotely Save 双向同步，
 version: v1.0.0
 author: Amadeus Kurisu & Neko
 repo: https://github.com/maolbsMd/astrbot_plugin_obsidian_sync
+icon: icon.png
