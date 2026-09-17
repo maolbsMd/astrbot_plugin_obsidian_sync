@@ -2,6 +2,28 @@ name: astrbot_plugin_obsidian_sync
 display_name: Obsidian Sync & LLM Vault
 desc: 内置轻量 WebDAV 服务，支持 Obsidian Remotely Save 双向同步，并为 LLM 提供双向读写、搜索笔记工具，告别遗忘。
 version: v1.0.0
-author: Amadeus Kurisu & Neko
+author: 牧奈 & maolbsMd
 repo: https://github.com/maolbsMd/astrbot_plugin_obsidian_sync
 icon: icon.png
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - qq_official_webhook
+  - telegram
+  - wecom
+  - discord
+  - lark
+  - dingtalk
+  - slack
+  - kook
+  - vocechat
+  - weixin_official_account
+  - weixin_oc
+  tags:
+  - 学习
+  - obsidian
+  - 工具
+  - WebDAV
+  - 同步
+  - 笔记
+astrbot_version: ">=4.25"
