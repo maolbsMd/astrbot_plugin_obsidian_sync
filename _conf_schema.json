@@ -1,0 +1,32 @@
+{
+  "host": {
+    "type": "string",
+    "description": "WebDAV 监听地址",
+    "default": "0.0.0.0"
+  },
+  "port": {
+    "type": "int",
+    "description": "WebDAV 服务端口（请避开 6199、6185 等占用端口）",
+    "default": 6190
+  },
+  "username": {
+    "type": "string",
+    "description": "WebDAV 登录用户名",
+    "default": "neko"
+  },
+  "password": {
+    "type": "string",
+    "description": "WebDAV 登录密码",
+    "default": "kurisu_loves_cat"
+  },
+  "vault_path": {
+    "type": "string",
+    "description": "Obsidian 笔记库挂载的绝对路径",
+    "default": "/AstrBot/data/obsidian_vault"
+  },
+  "auto_start": {
+    "type": "bool",
+    "description": "启动 AstrBot 时是否自动启动 WebDAV 服务",
+    "default": true
+  }
+}
