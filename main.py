@@ -32,6 +32,27 @@ class ObsidianSyncPlugin(Star):
         if self.auto_start:
             self._start_webdav_service()
 
+    def _resolve_vault_path(self, note_path: str) -> tuple[str, str]:
+        """
+        智能解析并对齐真实 Vault 路径。
+        若用户客户端在 WebDAV 根下同步到了子目录（如 obsidian_vault/），
+        自动检测并统一寻址，防止跨级存储与多层嵌套。
+        """
+        base_vault = os.path.abspath(self.vault_path)
+        # 检测是否存在同名内层 vault 目录（常见于 Remotely Save 指定了子目录）
+        nested_vault = os.path.join(base_vault, "obsidian_vault")
+        target_root = nested_vault if os.path.isdir(nested_vault) else base_vault
+
+        clean_path = note_path.strip().lstrip("/\\")
+        # 如果路径以 obsidian_vault/ 开头，根据 target_root 进行规范化
+        if clean_path.startswith("obsidian_vault/"):
+            sub_path = clean_path[len("obsidian_vault/"):]
+            full_path = os.path.abspath(os.path.join(target_root, sub_path))
+        else:
+            full_path = os.path.abspath(os.path.join(target_root, clean_path))
+
+        return target_root, full_path
+
     def _start_webdav_service(self):
         """在后台线程中启动 WsgiDAV 服务"""
         if self.is_running:
