@@ -142,10 +142,11 @@ class ObsidianSyncPlugin(Star):
         在用户的 Obsidian Vault 笔记库中根据关键词搜索相关的 Markdown 笔记。
         当需要回忆用户的备忘、学习笔记、考研进度、长期规划或特定知识时调用。
         """
-        if not os.path.exists(self.vault_path):
+        target_root, _ = self._resolve_vault_path("")
+        if not os.path.exists(target_root):
             return "Obsidian 笔记库目录尚未创建。"
             
-        md_files = glob.glob(os.path.join(self.vault_path, "**", "*.md"), recursive=True)
+        md_files = glob.glob(os.path.join(target_root, "**", "*.md"), recursive=True)
         if not md_files:
             return "当前 Obsidian 笔记库为空，尚未同步任何 Markdown 笔记。"
             
@@ -153,7 +154,7 @@ class ObsidianSyncPlugin(Star):
         kw_lower = keyword.lower()
         
         for file_path in md_files:
-            rel_path = os.path.relpath(file_path, self.vault_path)
+            rel_path = os.path.relpath(file_path, target_root)
             try:
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read()
@@ -247,8 +248,8 @@ class ObsidianSyncPlugin(Star):
         列出 Obsidian Vault 内的笔记和目录结构。
         subfolder: 可选子文件夹路径，留空为根目录。
         """
-        target_dir = os.path.abspath(os.path.join(self.vault_path, subfolder))
-        if not target_dir.startswith(os.path.abspath(self.vault_path)):
+        target_root, target_dir = self._resolve_vault_path(subfolder)
+        if not target_dir.startswith(target_root):
             return "访问拒绝：非法的目录路径。"
             
         if not os.path.exists(target_dir):
@@ -256,7 +257,7 @@ class ObsidianSyncPlugin(Star):
             
         items = []
         for root, dirs, files in os.walk(target_dir):
-            rel_root = os.path.relpath(root, self.vault_path)
+            rel_root = os.path.relpath(root, target_root)
             prefix = "" if rel_root == "." else f"📁 {rel_root}/\n"
             for f in files:
                 if f.endswith(".md"):
