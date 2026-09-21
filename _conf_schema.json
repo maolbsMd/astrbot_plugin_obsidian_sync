@@ -11,18 +11,18 @@
   },
   "username": {
     "type": "string",
-    "description": "WebDAV 登录用户名",
+    "description": "WebDAV 登录用户名（建议修改为自定义用户名）",
     "default": "neko"
   },
   "password": {
     "type": "string",
-    "description": "WebDAV 登录密码",
-    "default": "kurisu_loves_cat"
+    "description": "WebDAV 登录密码（强烈建议安装后立即在面板中修改为强密码，避免公网弱口令风险）",
+    "default": "change_me_to_your_password"
   },
   "vault_path": {
     "type": "string",
-    "description": "Obsidian 笔记库挂载的绝对路径",
-    "default": "/AstrBot/data/obsidian_vault"
+    "description": "Obsidian 笔记库持久化存储目录。默认保存至插件数据目录 data/plugin_data/astrbot_plugin_obsidian_sync/vault；如需挂载宿主机已有外部 Obsidian 库，可配置为绝对路径。",
+    "default": "data/plugin_data/astrbot_plugin_obsidian_sync/vault"
   },
   "auto_start": {
     "type": "bool",

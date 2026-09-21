@@ -2,14 +2,12 @@ import os
 import re
 import glob
 import threading
-import logging
 from pathlib import Path
 from astrbot.api.all import *
+from astrbot.api import logger
 from astrbot.api.event import filter
 
-logger = logging.getLogger("astrbot_plugin_obsidian_sync")
-
-@register("astrbot_plugin_obsidian_sync", "Amadeus Kurisu & Neko", "Obsidian WebDAV 同步与 LLM 知识库连接插件", "1.0.0")
+@register("astrbot_plugin_obsidian_sync", "牧奈 & maolbsMd", "Obsidian WebDAV 同步与 LLM 知识库连接插件", "v1.0.2")
 class ObsidianSyncPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -18,12 +16,20 @@ class ObsidianSyncPlugin(Star):
         self.host = self.config.get("host", "0.0.0.0")
         self.port = int(self.config.get("port", 6190))
         self.username = self.config.get("username", "neko")
-        self.password = self.config.get("password", "kurisu_loves_cat")
-        self.vault_path = self.config.get("vault_path", "/AstrBot/data/obsidian_vault")
+        self.password = self.config.get("password", "change_me_to_your_password")
+        self.vault_path = self.config.get("vault_path", "data/plugin_data/astrbot_plugin_obsidian_sync/vault")
         self.auto_start = self.config.get("auto_start", True)
+        
+        # 兼容相对路径与宿主机绝对路径
+        if not os.path.isabs(self.vault_path):
+            self.vault_path = os.path.abspath(self.vault_path)
         
         # 确保 vault 目录存在
         os.makedirs(self.vault_path, exist_ok=True)
+        
+        # 安全警告：若使用默认弱密码则在后台打印提醒
+        if self.password in ("kurisu_loves_cat", "change_me_to_your_password"):
+            logger.warning("[ObsidianSync] 警告: 当前正在使用默认 WebDAV 密码，强烈建议在 AstrBot 管理面板中修改为高强度密码！")
         
         self.server_thread = None
         self.server_instance = None
@@ -117,7 +123,8 @@ class ObsidianSyncPlugin(Star):
         
         if subcmd == "status":
             status_text = "🟢 运行中" if self.is_running else "🔴 已停止"
-            notes_count = len(glob.glob(os.path.join(self.vault_path, "**", "*.md"), recursive=True))
+            target_root, _ = self._resolve_vault_path("")
+            notes_count = len(glob.glob(os.path.join(target_root, "**", "*.md"), recursive=True))
             yield event.plain_result(
                 f"📝 Obsidian WebDAV 同步服务状态\n"
                 f"--------------------------\n"
@@ -149,16 +156,16 @@ class ObsidianSyncPlugin(Star):
         md_files = glob.glob(os.path.join(target_root, "**", "*.md"), recursive=True)
         if not md_files:
             return "当前 Obsidian 笔记库为空，尚未同步任何 Markdown 笔记。"
-            
+
         matches = []
         kw_lower = keyword.lower()
-        
+
         for file_path in md_files:
             rel_path = os.path.relpath(file_path, target_root)
             try:
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read()
-                
+
                 # 检查文件名或内容是否匹配
                 if kw_lower in rel_path.lower() or kw_lower in content.lower():
                     # 提取匹配片段
@@ -177,13 +184,13 @@ class ObsidianSyncPlugin(Star):
                     matches.append(f"📄 笔记: {rel_path}\n{preview}")
             except Exception as e:
                 continue
-                
+
             if len(matches) >= 5:
                 break
-                
+
         if not matches:
             return f"在 Obsidian 笔记库中未检索到包含 '{keyword}' 的内容。"
-            
+
         return f"🔍 Obsidian 检索结果 (关键词: '{keyword}'):\n\n" + "\n\n====================\n\n".join(matches)
 
     @llm_tool(name="read_obsidian_note")
@@ -196,9 +203,9 @@ class ObsidianSyncPlugin(Star):
         if not note_path.endswith(".md"):
             note_path += ".md"
             
-        full_path = os.path.abspath(os.path.join(self.vault_path, note_path))
+        target_root, full_path = self._resolve_vault_path(note_path)
         # 路径安全检查，防止越界访问
-        if not full_path.startswith(os.path.abspath(self.vault_path)):
+        if not full_path.startswith(target_root):
             return "访问拒绝：非法的笔记路径。"
             
         if not os.path.exists(full_path):
@@ -225,8 +232,8 @@ class ObsidianSyncPlugin(Star):
         if not note_path.endswith(".md"):
             note_path += ".md"
             
-        full_path = os.path.abspath(os.path.join(self.vault_path, note_path))
-        if not full_path.startswith(os.path.abspath(self.vault_path)):
+        target_root, full_path = self._resolve_vault_path(note_path)
+        if not full_path.startswith(target_root):
             return "访问拒绝：非法的笔记路径。"
             
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
