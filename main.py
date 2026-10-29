@@ -1,4 +1,4 @@
-"""Obsidian WebDAV 同步与 LLM 知识库连接插件（v1.1.0）。
+"""Obsidian WebDAV 同步与 LLM 知识库连接插件（v1.2.0）。
 
 安全基线：
 - 默认只监听 127.0.0.1，公网监听需要显式开启 allow_public_bind；
@@ -6,16 +6,24 @@
 - 所有工具路径都经过 realpath + commonpath 校验，禁止越界与隐藏目录；
 - WebDAV 禁止写入 .obsidian/plugins、community-plugins.json 与 .git；
 - 文件 IO 一律 asyncio.to_thread，写入带快照，覆盖写使用原子替换。
+
+v1.2.0 新增：
+- SQLite FTS5 全文索引（trigram 中文子串，自动回退 LIKE）；
+- /obsidian history / undo 历史版本与一键回滚；
+- /obsidian doctor 自检、/obsidian audit 工具调用审计。
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import secrets
 import shutil
+import socket
 import threading
 import time
+from datetime import datetime
 from itertools import islice
 from pathlib import Path
 
@@ -47,6 +55,11 @@ except ImportError:  # pragma: no cover - 兼容直接以脚本方式加载
         resolve_root,
         search_notes,
     )
+
+try:  # 以包方式加载（AstrBot 正常路径）
+    from .note_index import index_stats, search_index, sync_index
+except ImportError:  # pragma: no cover - 兼容直接以脚本方式加载
+    from note_index import index_stats, search_index, sync_index  # type: ignore[no-redef]
 
 try:  # 以包方式加载（AstrBot 正常路径）
     from .webdav_guard import DavGuard
@@ -90,7 +103,7 @@ def _is_loopback(host: str) -> bool:
     PLUGIN_NAME,
     "牧奈 & maolbsMd",
     "Obsidian WebDAV 同步与 LLM 知识库连接插件",
-    "1.1.0",
+    "1.2.0",
 )
 class ObsidianSyncPlugin(Star):
     def __init__(self, context: Context, config: dict | None = None):
@@ -110,9 +123,17 @@ class ObsidianSyncPlugin(Star):
         self.backup_keep = _clamp_int(self.config.get("backup_keep"), 10, 0, 100)
         self.max_read_lines = 500
         self.max_return_chars = 20000
+        self.build_index_on_start = bool(self.config.get("build_index_on_start", True))
+        self.index_refresh_seconds = _clamp_int(
+            self.config.get("index_refresh_seconds"), 60, 0, 3600
+        )
 
         raw_users = self.config.get("allowed_users") or []
         self.allowed_users = {str(user).strip() for user in raw_users if str(user).strip()}
+
+        self.index_db = self.data_dir / "index.sqlite3"
+        self.audit_file = self.data_dir / "audit.jsonl"
+        self._last_index_sync = 0.0
 
         self.server_thread: threading.Thread | None = None
         self.server_instance = None
@@ -136,6 +157,9 @@ class ObsidianSyncPlugin(Star):
 
         if self.auto_start:
             self._start_webdav_service()
+
+        if self.build_index_on_start:
+            self._warm_index()
 
     # ================= 初始化辅助 =================
 
@@ -331,6 +355,105 @@ class ObsidianSyncPlugin(Star):
         self.server_thread = None
         logger.info("[ObsidianSync] 插件已卸载，WebDAV 服务已关闭")
 
+    # ================= 状态与自检 =================
+
+    def _status_text(self) -> str:
+        notes = count_notes(self.root)
+        bind = f"{self.host}:{self.port}"
+        if self._public_bind_blocked:
+            bind += "（公网监听已被拦截，已回退）"
+        permission = "仅私聊" if self.private_only else "不限会话"
+        if self.allowed_users:
+            permission += f"，白名单 {len(self.allowed_users)} 人"
+        stats = index_stats(self.index_db)
+        index_line = f"{stats['notes']} 篇（{stats['tokenizer']}）" if stats else "未建立"
+
+        return "\n".join(
+            [
+                "📝 Obsidian WebDAV 状态",
+                "--------------------------",
+                f"服务: {'🟢 运行中' if self.is_running else '🔴 已停止'}",
+                f"监听: {bind}",
+                f"模式: {'只读' if self.read_only else '可写'}",
+                f"根目录: {self.root}",
+                f"笔记数: {notes}",
+                f"索引: {index_line}",
+                f"认证用户: {self.username}",
+                f"工具权限: {permission}",
+            ]
+        )
+
+    def _probe_host(self) -> str:
+        if self.host in {"0.0.0.0", ""}:  # noqa: S104 - 只用于本地探测端口
+            return "127.0.0.1"
+        if self.host == "::":
+            return "::1"
+        return self.host
+
+    def _doctor_sync(self) -> str:
+        lines = ["🩺 Obsidian Sync 自检", "--------------------------"]
+        lines.append(
+            f"{'✅' if self.is_running else '❌'} WebDAV 服务: "
+            f"{'运行中' if self.is_running else '未运行'}"
+        )
+        if self._public_bind_blocked:
+            lines.append(f"⚠️ 监听: 配置为公网，已回退到 {self.host}:{self.port}")
+        elif _is_loopback(self.host):
+            lines.append(f"✅ 监听: {self.host}:{self.port}（仅本机）")
+        else:
+            lines.append(f"⚠️ 监听: {self.host}:{self.port}（非回环，请确认 TLS/反向代理）")
+
+        if self._password_generated:
+            lines.append("⚠️ 密码: 当前是自动生成的，建议在面板改成自己管理的强口令")
+        else:
+            lines.append("✅ 密码: 已自定义")
+        lines.append(
+            f"ℹ️ 模式: {'只读' if self.read_only else '可写'}，"
+            f"工具写入 {'开启' if self.write_enabled else '关闭'}"
+        )
+
+        plugins = self.root / ".obsidian" / "plugins"
+        if plugins.is_dir():
+            lines.append(
+                "⚠️ 库内存在 .obsidian/plugins：WebDAV 写入该目录会被 403，"
+                "请确认 Remotely Save 未同步配置目录"
+            )
+
+        stats = index_stats(self.index_db)
+        if stats:
+            lines.append(
+                f"✅ 索引: {stats['notes']} 篇，{max(1, stats['bytes'] // 1024)} KB，"
+                f"tokenizer={stats['tokenizer']}"
+            )
+        else:
+            lines.append("⚠️ 索引: 尚未建立（首次搜索会自动建，或 /obsidian reindex）")
+
+        history_dir = self.data_dir / "history"
+        if history_dir.is_dir():
+            size = 0
+            for item in history_dir.rglob("*.md"):
+                try:
+                    size += item.stat().st_size
+                except OSError:
+                    continue
+            lines.append(f"ℹ️ 历史备份: {max(1, size // 1024)} KB")
+        else:
+            lines.append("ℹ️ 历史备份: 暂无")
+
+        if self.is_running:
+            try:
+                with socket.create_connection((self._probe_host(), self.port), timeout=1.5):
+                    lines.append("✅ 端口可连接")
+            except OSError as exc:
+                lines.append(f"❌ 端口连接失败: {exc}")
+
+        try:
+            free = shutil.disk_usage(self.data_dir).free // MB
+            lines.append(f"ℹ️ 磁盘剩余: {free} MB")
+        except OSError:
+            pass
+        return "\n".join(lines)
+
     # ================= 用户指令（仅管理员） =================
 
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -339,42 +462,86 @@ class ObsidianSyncPlugin(Star):
         """Obsidian 同步服务管理（仅管理员）。"""
         parts = (event.message_str or "").strip().split()
         sub = parts[1].lower() if len(parts) > 1 else "status"
+        argument = " ".join(parts[2:]).strip()
 
         if sub == "status":
-            notes = await asyncio.to_thread(count_notes, self.root)
-            bind = f"{self.host}:{self.port}"
-            if self._public_bind_blocked:
-                bind += "（公网监听已被拦截，已回退）"
-            permission = "仅私聊" if self.private_only else "不限会话"
-            if self.allowed_users:
-                permission += f"，白名单 {len(self.allowed_users)} 人"
-            yield event.plain_result(
-                "📝 Obsidian WebDAV 状态\n"
-                "--------------------------\n"
-                f"服务: {'🟢 运行中' if self.is_running else '🔴 已停止'}\n"
-                f"监听: {bind}\n"
-                f"模式: {'只读' if self.read_only else '可写'}\n"
-                f"根目录: {self.root}\n"
-                f"笔记数: {notes}\n"
-                f"认证用户: {self.username}\n"
-                f"工具权限: {permission}"
-            )
-        elif sub in {"start", "restart"}:
+            yield event.plain_result(await asyncio.to_thread(self._status_text))
+            return
+        if sub == "doctor":
+            yield event.plain_result(await asyncio.to_thread(self._doctor_sync))
+            return
+        if sub in {"start", "restart"}:
             if sub == "restart":
                 await asyncio.to_thread(self._stop_webdav_service)
             self._start_webdav_service()
             yield event.plain_result(f"🔄 WebDAV 服务已请求启动，端口 {self.port}。")
-        elif sub == "stop":
+            return
+        if sub == "stop":
             await asyncio.to_thread(self._stop_webdav_service)
             yield event.plain_result("⏹ WebDAV 服务已停止。")
-        else:
+            return
+        if sub == "reindex":
+            try:
+                stats = await asyncio.to_thread(
+                    sync_index, self.index_db, self.root, self.max_note_mb * MB, True
+                )
+            except Exception as exc:
+                yield event.plain_result(f"❌ 索引重建失败：{exc}")
+                return
+            self._last_index_sync = time.monotonic()
             yield event.plain_result(
-                "用法（仅管理员）：\n"
-                "/obsidian status  - 查看状态\n"
-                "/obsidian start   - 启动服务\n"
-                "/obsidian stop    - 停止服务\n"
-                "/obsidian restart - 重启服务"
+                "🧱 索引重建完成\n"
+                f"笔记: {stats['indexed']} 篇（新增 {stats['added']}，"
+                f"更新 {stats['updated']}，删除 {stats['removed']}）\n"
+                f"tokenizer: {stats['tokenizer']}"
             )
+            return
+        if sub in {"history", "undo"}:
+            if not argument:
+                yield event.plain_result(f"用法: /obsidian {sub} <笔记路径>")
+                return
+            try:
+                target = await asyncio.to_thread(resolve_note_path, self.root, argument)
+            except PathRejected as exc:
+                yield event.plain_result(f"访问拒绝：{exc}")
+                return
+            if sub == "history":
+                lines = await asyncio.to_thread(self._history_lines, target)
+                if not lines:
+                    yield event.plain_result("该笔记没有历史版本。")
+                else:
+                    yield event.plain_result(
+                        f"🗂 {relative_display(self.root, target)} 的历史版本（最近 10 个）：\n"
+                        + "\n".join(lines)
+                    )
+                return
+            restored = await asyncio.to_thread(self._restore_latest_sync, target)
+            if restored is None:
+                yield event.plain_result("该笔记没有可恢复的历史版本。")
+            else:
+                yield event.plain_result(
+                    f"♻️ 已把 {relative_display(self.root, target)} 恢复到最新备份"
+                    f"（{restored.name}），恢复前的内容也已备份。"
+                )
+            return
+        if sub == "audit":
+            entries = await asyncio.to_thread(self._read_audit_sync, 20)
+            if not entries:
+                yield event.plain_result("暂无审计记录。")
+            else:
+                yield event.plain_result("🧾 最近 20 条工具调用：\n" + "\n".join(entries))
+            return
+
+        yield event.plain_result(
+            "用法（仅管理员）：\n"
+            "/obsidian status\n"
+            "/obsidian doctor\n"
+            "/obsidian start | stop | restart\n"
+            "/obsidian reindex\n"
+            "/obsidian history <笔记>\n"
+            "/obsidian undo <笔记>\n"
+            "/obsidian audit"
+        )
 
     # ================= 权限与工具辅助 =================
 
@@ -410,18 +577,65 @@ class ObsidianSyncPlugin(Star):
             content = clip_text(content, self.max_return_chars)
         return {"content": content, "total": total, "shown": len(shown)}
 
+    # ================= 历史版本 =================
+
+    def _history_dir(self, target: Path) -> Path | None:
+        try:
+            relative = target.relative_to(self.root)
+        except ValueError:
+            return None
+        return self.data_dir / "history" / relative.parent
+
+    def _history_files(self, target: Path) -> list[Path]:
+        folder = self._history_dir(target)
+        if folder is None or not folder.is_dir():
+            return []
+        items = [
+            item
+            for item in folder.iterdir()
+            if item.is_file()
+            and item.name.startswith(f"{target.stem}.")
+            and item.suffix == target.suffix
+        ]
+        items.sort(key=lambda item: item.name, reverse=True)
+        return items
+
+    def _history_lines(self, target: Path, limit: int = 10) -> list[str]:
+        lines = []
+        for item in self._history_files(target)[:limit]:
+            try:
+                stat = item.stat()
+            except OSError:
+                continue
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime))
+            lines.append(f"  {stamp}  {max(1, stat.st_size // 1024)} KB  {item.name}")
+        return lines
+
+    def _restore_latest_sync(self, target: Path) -> Path | None:
+        backups = self._history_files(target)
+        if not backups:
+            return None
+        latest = backups[0]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        self._snapshot(target)
+        temp = target.with_name(f".{target.name}.restore-{os.getpid()}")
+        try:
+            shutil.copy2(latest, temp)
+            os.replace(temp, target)
+        finally:
+            temp.unlink(missing_ok=True)
+        return latest
+
     def _snapshot(self, target: Path) -> str:
         """覆盖/追加前备份到 data_dir/history，返回相对展示路径。"""
         if self.backup_keep <= 0 or not target.is_file():
             return ""
-        try:
-            relative = target.relative_to(self.root)
-        except ValueError:
+        folder = self._history_dir(target)
+        if folder is None:
             return ""
-        folder = self.data_dir / "history" / relative.parent
         try:
             folder.mkdir(parents=True, exist_ok=True)
-            stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{time.time_ns() % 1_000_000:06d}"
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
             destination = folder / f"{target.stem}.{stamp}{target.suffix}"
             shutil.copy2(target, destination)
             self._prune_backups(folder, target.stem, target.suffix)
@@ -439,7 +653,7 @@ class ObsidianSyncPlugin(Star):
             ]
         except OSError:
             return
-        candidates.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+        candidates.sort(key=lambda item: item.name, reverse=True)
         for old in candidates[self.backup_keep :]:
             old.unlink(missing_ok=True)
 
@@ -472,6 +686,116 @@ class ObsidianSyncPlugin(Star):
                 break
         return items
 
+    # ================= 索引 =================
+
+    def _warm_index(self) -> None:
+        def run() -> None:
+            try:
+                stats = sync_index(self.index_db, self.root, self.max_note_mb * MB)
+                self._last_index_sync = time.monotonic()
+                logger.info(
+                    "[ObsidianSync] 索引就绪: %s 篇（新增 %s，更新 %s，删除 %s，tokenizer=%s）",
+                    stats["indexed"],
+                    stats["added"],
+                    stats["updated"],
+                    stats["removed"],
+                    stats["tokenizer"],
+                )
+            except Exception as exc:
+                logger.warning("[ObsidianSync] 索引构建失败，将回退全盘搜索: %s", exc)
+
+        threading.Thread(target=run, name="obsidian-index", daemon=True).start()
+
+    def _ensure_index(self) -> None:
+        fresh_enough = (
+            self.index_refresh_seconds > 0
+            and self.index_db.is_file()
+            and time.monotonic() - self._last_index_sync < self.index_refresh_seconds
+        )
+        if fresh_enough:
+            return
+        sync_index(self.index_db, self.root, self.max_note_mb * MB)
+        self._last_index_sync = time.monotonic()
+
+    def _search_impl(self, keyword: str) -> list[dict]:
+        try:
+            self._ensure_index()
+            return search_index(self.index_db, keyword, self.max_search_results)
+        except Exception as exc:
+            logger.warning("[ObsidianSync] 索引搜索失败，回退全盘扫描: %s", exc)
+            return search_notes(self.root, keyword, self.max_search_results, self.max_note_mb * MB)
+
+    # ================= 审计 =================
+
+    def _audit_sync(
+        self,
+        tool: str,
+        sender: str,
+        group: str,
+        detail: str,
+        ok: bool,
+        ms: int,
+    ) -> None:
+        record = {
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "tool": tool,
+            "sender": sender,
+            "group": group,
+            "detail": clip_text(detail, 120),
+            "ok": ok,
+            "ms": ms,
+        }
+        line = json.dumps(record, ensure_ascii=False) + "\n"
+        try:
+            if self.audit_file.is_file() and self.audit_file.stat().st_size > 2 * MB:
+                os.replace(self.audit_file, self.audit_file.with_suffix(".jsonl.1"))
+            with open(self.audit_file, "a", encoding="utf-8") as handle:
+                handle.write(line)
+        except OSError:
+            pass
+
+    async def _audit(
+        self,
+        event: AstrMessageEvent,
+        tool: str,
+        detail: str,
+        ok: bool,
+        started: float,
+    ) -> None:
+        sender = ""
+        group = ""
+        try:
+            sender = str(event.get_sender_id())
+            group = str(event.get_group_id() or "")
+        except Exception:  # 部分适配器没有这些字段
+            sender, group = "", ""
+        ms = int((time.perf_counter() - started) * 1000)
+        try:
+            await asyncio.to_thread(self._audit_sync, tool, sender, group, detail, ok, ms)
+        except Exception:  # 审计失败不能影响工具返回
+            return
+
+    def _read_audit_sync(self, limit: int = 20) -> list[str]:
+        if not self.audit_file.is_file():
+            return []
+        try:
+            with open(self.audit_file, encoding="utf-8") as handle:
+                lines = handle.readlines()[-limit:]
+        except OSError:
+            return []
+        entries = []
+        for line in lines:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            mark = "✅" if record.get("ok") else "❌"
+            entries.append(
+                f"{mark} {record.get('ts', '')} {record.get('tool', '')} "
+                f"{record.get('detail', '')} {record.get('ms', 0)}ms"
+            )
+        return entries
+
     # ================= LLM 工具 =================
 
     @llm_tool(name="search_obsidian_notes")
@@ -481,30 +805,36 @@ class ObsidianSyncPlugin(Star):
         Args:
             keyword(string): 搜索关键词，不能为空
         """
-        if not self._tool_allowed(event):
-            return DENIED_TOOL
+        started = time.perf_counter()
+        ok = False
         keyword = (keyword or "").strip()
-        if not keyword:
-            return "关键词不能为空，请给出要搜索的词。"
+        try:
+            if not self._tool_allowed(event):
+                return DENIED_TOOL
+            if not keyword:
+                return "关键词不能为空，请给出要搜索的词。"
 
-        results = await asyncio.to_thread(
-            search_notes,
-            self.root,
-            keyword,
-            self.max_search_results,
-            self.max_note_mb * MB,
-        )
-        if not results:
-            return f"未检索到包含“{clip_text(keyword, 40)}”的笔记。"
+            try:
+                results = await asyncio.to_thread(self._search_impl, keyword)
+            except Exception as exc:
+                logger.warning("[ObsidianSync] 搜索失败: %s", exc)
+                return f"搜索失败：{exc}"
 
-        blocks = [
-            f"📄 {item['path']}\n{clip_text(chr(10).join(item['snippets']), 600)}"
-            for item in results
-        ]
-        body = clip_text("\n\n".join(blocks), self.max_return_chars)
-        return (
-            f"{UNTRUSTED_OPEN}\n检索关键词：{clip_text(keyword, 40)}\n\n{body}\n{UNTRUSTED_CLOSE}"
-        )
+            if not results:
+                return f"未检索到包含“{clip_text(keyword, 40)}”的笔记。"
+
+            blocks = [
+                f"📄 {item['path']}\n{clip_text(chr(10).join(item['snippets']), 600)}"
+                for item in results
+            ]
+            body = clip_text("\n\n".join(blocks), self.max_return_chars)
+            ok = True
+            return (
+                f"{UNTRUSTED_OPEN}\n检索关键词：{clip_text(keyword, 40)}\n\n{body}\n"
+                f"{UNTRUSTED_CLOSE}"
+            )
+        finally:
+            await self._audit(event, "search", f"kw_len={len(keyword)}", ok, started)
 
     @llm_tool(name="read_obsidian_note")
     async def read_obsidian_note(
@@ -516,28 +846,34 @@ class ObsidianSyncPlugin(Star):
             note_path(string): 相对笔记库的路径，例如 '考研/高数.md'
             max_lines(number): 最多读取的行数，1-500，默认 200
         """
-        if not self._tool_allowed(event):
-            return DENIED_TOOL
-        limit = _clamp_int(max_lines, 200, 1, self.max_read_lines)
+        started = time.perf_counter()
+        ok = False
         try:
-            target = await asyncio.to_thread(resolve_note_path, self.root, note_path)
-        except PathRejected as exc:
-            return f"访问拒绝：{exc}"
+            if not self._tool_allowed(event):
+                return DENIED_TOOL
+            limit = _clamp_int(max_lines, 200, 1, self.max_read_lines)
+            try:
+                target = await asyncio.to_thread(resolve_note_path, self.root, note_path)
+            except PathRejected as exc:
+                return f"访问拒绝：{exc}"
 
-        try:
-            note = await asyncio.to_thread(self._read_note_sync, target, limit)
-        except PathRejected as exc:
-            return f"读取失败：{exc}"
-        except OSError as exc:
-            return f"读取失败：{exc}"
-        if note is None:
-            return f"未找到笔记：{clip_text(note_path, 120)}"
+            try:
+                note = await asyncio.to_thread(self._read_note_sync, target, limit)
+            except PathRejected as exc:
+                return f"读取失败：{exc}"
+            except OSError as exc:
+                return f"读取失败：{exc}"
+            if note is None:
+                return f"未找到笔记：{clip_text(note_path, 120)}"
 
-        return (
-            f"📖 笔记：{relative_display(self.root, target)}"
-            f"（共 {note['total']} 行，展示前 {note['shown']} 行）\n\n"
-            f"{UNTRUSTED_OPEN}\n{note['content']}\n{UNTRUSTED_CLOSE}"
-        )
+            ok = True
+            return (
+                f"📖 笔记：{relative_display(self.root, target)}"
+                f"（共 {note['total']} 行，展示前 {note['shown']} 行）\n\n"
+                f"{UNTRUSTED_OPEN}\n{note['content']}\n{UNTRUSTED_CLOSE}"
+            )
+        finally:
+            await self._audit(event, "read", str(note_path), ok, started)
 
     @llm_tool(name="write_obsidian_note")
     async def write_obsidian_note(
@@ -554,34 +890,41 @@ class ObsidianSyncPlugin(Star):
             content(string): 要写入的 Markdown 正文
             mode(string): 'append' 追加（默认）或 'overwrite' 覆盖
         """
-        if not self._tool_allowed(event):
-            return DENIED_TOOL
-        if not self.write_enabled:
-            return "写入功能未启用，请在插件配置中开启 write_enabled。"
-
+        started = time.perf_counter()
+        ok = False
         mode = (mode or "append").strip().lower()
-        if mode not in {"append", "overwrite"}:
-            return "mode 仅支持 'append' 或 'overwrite'。"
-        text = (content or "").strip()
-        if not text:
-            return "内容不能为空。"
-        if len(text.encode("utf-8")) > self.max_note_mb * MB:
-            return f"内容超过 {self.max_note_mb}MB 上限。"
-
         try:
-            target = await asyncio.to_thread(resolve_note_path, self.root, note_path)
-        except PathRejected as exc:
-            return f"访问拒绝：{exc}"
+            if not self._tool_allowed(event):
+                return DENIED_TOOL
+            if not self.write_enabled:
+                return "写入功能未启用，请在插件配置中开启 write_enabled。"
+            if mode not in {"append", "overwrite"}:
+                return "mode 仅支持 'append' 或 'overwrite'。"
 
-        async with self._write_lock:
+            text = (content or "").strip()
+            if not text:
+                return "内容不能为空。"
+            if len(text.encode("utf-8")) > self.max_note_mb * MB:
+                return f"内容超过 {self.max_note_mb}MB 上限。"
+
             try:
-                backup = await asyncio.to_thread(self._write_note_sync, target, text, mode)
-            except OSError as exc:
-                return f"写入失败：{exc}"
+                target = await asyncio.to_thread(resolve_note_path, self.root, note_path)
+            except PathRejected as exc:
+                return f"访问拒绝：{exc}"
 
-        action = "追加" if mode == "append" else "覆盖"
-        suffix = f"（旧版本已备份到 {backup}）" if backup else ""
-        return f"✅ 已{action}写入笔记：{relative_display(self.root, target)}{suffix}"
+            async with self._write_lock:
+                try:
+                    backup = await asyncio.to_thread(self._write_note_sync, target, text, mode)
+                except OSError as exc:
+                    return f"写入失败：{exc}"
+
+            self._last_index_sync = 0.0
+            ok = True
+            action = "追加" if mode == "append" else "覆盖"
+            suffix = f"（旧版本已备份到 {backup}）" if backup else ""
+            return f"✅ 已{action}写入笔记：{relative_display(self.root, target)}{suffix}"
+        finally:
+            await self._audit(event, "write", f"{mode} {note_path}", ok, started)
 
     @llm_tool(name="list_obsidian_notes")
     async def list_obsidian_notes(self, event: AstrMessageEvent, subfolder: str = "") -> str:
@@ -590,17 +933,23 @@ class ObsidianSyncPlugin(Star):
         Args:
             subfolder(string): 可选的子目录，留空表示库根目录
         """
-        if not self._tool_allowed(event):
-            return DENIED_TOOL
+        started = time.perf_counter()
+        ok = False
         try:
-            items = await asyncio.to_thread(self._list_notes_sync, subfolder)
-        except PathRejected as exc:
-            return f"访问拒绝：{exc}"
+            if not self._tool_allowed(event):
+                return DENIED_TOOL
+            try:
+                items = await asyncio.to_thread(self._list_notes_sync, subfolder)
+            except PathRejected as exc:
+                return f"访问拒绝：{exc}"
 
-        if items is None:
-            return f"目录不存在：{clip_text(subfolder, 120)}"
-        if not items:
-            return "该目录下没有 Markdown 笔记。"
+            if items is None:
+                return f"目录不存在：{clip_text(subfolder, 120)}"
+            if not items:
+                return "该目录下没有 Markdown 笔记。"
 
-        listing = "\n".join(f"  📄 {clip_text(name, 160)}" for name in items)
-        return f"📂 笔记列表（最多 50 条）：\n{listing}"
+            ok = True
+            listing = "\n".join(f"  📄 {clip_text(name, 160)}" for name in items)
+            return f"📂 笔记列表（最多 50 条）：\n{listing}"
+        finally:
+            await self._audit(event, "list", str(subfolder), ok, started)

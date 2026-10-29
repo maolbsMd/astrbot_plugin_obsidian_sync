@@ -114,6 +114,7 @@ class PluginInitTest(unittest.TestCase):
             "host": "127.0.0.1",
             "auto_start": False,
             "password": "s" * 20,
+            "build_index_on_start": False,
         }
         self.plugin = plugin_module.ObsidianSyncPlugin(object(), self.config)
 
@@ -217,6 +218,44 @@ class PluginInitTest(unittest.TestCase):
     def test_search_tool_requires_keyword(self):
         result = asyncio.run(self.plugin.search_obsidian_notes(_Event(), "   "))
         self.assertIn("关键词不能为空", result)
+
+    def test_history_and_undo(self):
+        target = self.plugin.root / "notes" / "a.md"
+        self.plugin._write_note_sync(target, "first", "append")
+        self.plugin._write_note_sync(target, "second", "append")
+        self.plugin._write_note_sync(target, "third", "overwrite")
+        self.assertIn("third", target.read_text(encoding="utf-8"))
+
+        self.assertTrue(self.plugin._history_lines(target))
+        restored = self.plugin._restore_latest_sync(target)
+        self.assertIsNotNone(restored)
+        content = target.read_text(encoding="utf-8")
+        self.assertIn("second", content)
+        self.assertNotIn("third", content)
+
+    def test_undo_without_history(self):
+        target = self.plugin.root / "fresh.md"
+        target.write_text("only", encoding="utf-8")
+        self.assertIsNone(self.plugin._restore_latest_sync(target))
+
+    def test_audit_records_tool_call(self):
+        (self.plugin.root / "n.md").write_text("keyword body", encoding="utf-8")
+        asyncio.run(self.plugin.search_obsidian_notes(_Event(), "keyword"))
+        entries = self.plugin._read_audit_sync(10)
+        self.assertTrue(any("search" in line for line in entries))
+
+    def test_doctor_report(self):
+        report = self.plugin._doctor_sync()
+        self.assertIn("WebDAV", report)
+        self.assertIn("索引", report)
+
+    def test_status_mentions_index(self):
+        self.assertIn("索引", self.plugin._status_text())
+
+    def test_search_uses_index_after_write(self):
+        asyncio.run(self.plugin.write_obsidian_note(_Event(), "indexed.md", "独特关键词", "append"))
+        result = asyncio.run(self.plugin.search_obsidian_notes(_Event(), "独特关键词"))
+        self.assertIn("indexed.md", result)
 
 
 if __name__ == "__main__":

@@ -83,6 +83,25 @@
     "default": 5,
     "hint": "取值 1-20。"
   },
+  "build_index_on_start": {
+    "type": "bool",
+    "description": "启动时后台构建全文索引",
+    "default": true,
+    "hint": "索引使用 SQLite FTS5（中文 trigram），大幅加快搜索；关闭后首次搜索时才建。"
+  },
+  "index_refresh_seconds": {
+    "type": "int",
+    "description": "索引自动刷新间隔（秒）",
+    "default": 60,
+    "hint": "取值 0-3600，0 表示每次搜索前都检查。Bot 自己写入后会立即刷新。"
+  },
+  "allow_weak_password": {
+    "type": "bool",
+    "description": "允许保留弱口令（不推荐）",
+    "default": false,
+    "obvious_hint": true,
+    "hint": "开启后不会再自动替换默认/弱口令。仅在完全本机调试时使用，公网环境务必关闭。"
+  },
   "backup_keep": {
     "type": "int",
     "description": "每篇笔记保留的历史版本数",

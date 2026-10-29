@@ -2,15 +2,18 @@
 
 把 **Obsidian** 笔记库接进 **AstrBot**：内置 WebDAV 供 Remotely Save 双向同步，同时给 LLM 四个原生工具，让它能安全地搜索、读取、写入、浏览你的笔记。
 
-> v1.1.0 是一次**安全版本**，默认行为有变化，升级前请先看 [从 v1.0.x 升级](#从-v10x-升级)。
+> **v1.2.0** 新增全文索引、历史版本/撤销、自检与审计；**v1.1.0** 是安全版本，默认行为有变化。从 v1.0.x 升级请先看 [从 v1.0.x 升级](#从-v10x-升级)。v1.2.0 本身没有破坏性变更。
 
 ## 核心特性
 
 1. **内置 WebDAV**：仅依赖纯 Python 的 `wsgidav` + `cheroot`，不需要 Nginx/Apache 或 Docker 容器。
 2. **LLM 知识库**：`search_obsidian_notes` / `read_obsidian_note` / `write_obsidian_note` / `list_obsidian_notes` 四个工具，让 Bot 拥有可检索的长期记忆。
-3. **安全默认（v1.1.0）**：
+3. **全文索引（v1.2.0）**：SQLite FTS5 + 中文 trigram，搜索从"每次全盘读文件"变成索引查询；库里几万篇笔记也能毫秒级返回。FTS5 不可用时自动回退 LIKE / 全盘扫描。
+4. **历史版本与撤销（v1.2.0）**：每次写入前自动快照，`/obsidian history <笔记>` 查看、`/obsidian undo <笔记>` 一键回滚；恢复前会再备份当前内容。
+5. **自检与审计（v1.2.0）**：`/obsidian doctor` 检查公网监听、弱口令、插件目录、索引、端口、磁盘；每次工具调用写入本地 `audit.jsonl`，`/obsidian audit` 可查。
+6. **安全默认（v1.1.0）**：
    - 默认只监听 `127.0.0.1`，公网监听必须显式开启；
-   - 默认/弱口令自动替换为 18 位随机强口令并写回配置；
+   - 默认/弱口令自动替换为 24 字符随机强口令并写回配置；
    - 路径校验使用 `realpath + commonpath`，`../vault_private/` 这类前缀绕过会被拒绝；
    - WebDAV 禁止写入 `.obsidian/plugins`、`community-plugins.json`、`.git`，堵住"同步一个恶意插件到用户电脑"的链路；
    - 支持只读模式、私聊限制、用户白名单、单篇笔记大小上限；
@@ -21,12 +24,13 @@
 | 项目 | 默认值 | 说明 |
 |---|---|---|
 | 监听地址 | `127.0.0.1` | 远程访问需开启 `allow_public_bind` |
-| 密码 | 自动生成 | 弱口令/空口令启动时替换为随机 18 位密码并写回配置 |
+| 密码 | 自动生成 | 弱口令/空口令启动时替换为随机 24 字符密码并写回配置 |
 | 路径校验 | 开启 | 越界、绝对路径、隐藏目录一律拒绝 |
 | WebDAV 写入 | 可写 | 但 `.obsidian/plugins`、`community-plugins.json`、`.git` 固定 403 |
 | LLM 写入 | 开启 | 可关 `write_enabled`；`mode` 仅接受 `append` / `overwrite` |
 | 笔记工具范围 | 不限会话 | 建议开启 `private_only` 或配置 `allowed_users` |
 | 备份 | 保留 10 份 | 存放在插件数据目录 `history/`，不会同步进笔记库 |
+| 索引 | 启动时构建 | `index.sqlite3`，不影响笔记文件本身 |
 
 ## 安装
 
@@ -57,6 +61,9 @@ git clone https://github.com/maolbsMd/astrbot_plugin_obsidian_sync.git
 | `allowed_users` | `[]` | 允许使用笔记工具的用户 ID；空 = 不限制 |
 | `max_note_mb` | `2` | 单篇笔记读写上限（1–20MB） |
 | `max_search_results` | `5` | 搜索结果条数上限（1–20） |
+| `build_index_on_start` | `true` | 启动时后台构建全文索引 |
+| `index_refresh_seconds` | `60` | 索引自动刷新间隔（0 = 每次搜索都检查） |
+| `allow_weak_password` | `false` | 允许保留弱口令，仅本机调试用 |
 | `backup_keep` | `10` | 每篇笔记保留的历史版本数，0 = 关闭 |
 
 ## Obsidian 端配置（Remotely Save）
@@ -83,11 +90,23 @@ git clone https://github.com/maolbsMd/astrbot_plugin_obsidian_sync.git
 ## 管理指令（仅 AstrBot 管理员）
 
 ```text
-/obsidian status   查看状态、端口、根目录、笔记数
-/obsidian start    启动 WebDAV
-/obsidian stop     停止 WebDAV
-/obsidian restart  重启 WebDAV
+/obsidian status            查看状态、端口、根目录、笔记数、索引
+/obsidian doctor            自检：监听/密码/插件目录/索引/端口/磁盘
+/obsidian start | stop      启动 / 停止 WebDAV
+/obsidian restart           重启 WebDAV
+/obsidian reindex           强制重建全文索引
+/obsidian history <笔记>    查看最近 10 个历史版本
+/obsidian undo <笔记>       回滚到最新备份（恢复前会再备份当前内容）
+/obsidian audit             查看最近 20 条工具调用记录
 ```
+
+## 全文索引与历史版本（v1.2.0）
+
+- 索引文件在插件数据目录 `index.sqlite3`，只存笔记正文副本，不动你的 Markdown。
+- 启动时后台建索引，之后按 `mtime/size` 增量更新；Bot 自己写入后会立即触发刷新。
+- 中文关键词 ≥3 字走 FTS5 trigram，1–2 字自动用 LIKE，不会漏。
+- 索引损坏或 FTS5 不可用时自动回退全盘扫描，功能不中断；`/obsidian reindex` 可强制重建。
+- 历史版本放在 `history/<相对路径>/`，`/obsidian undo` 恢复时会先把当前版本再备份一次，所以撤销本身也能撤销。
 
 ## 从 v1.0.x 升级
 
@@ -104,6 +123,8 @@ v1.1.0 有意收紧了默认值，升级后请检查：
 
 - 笔记库默认：`data/plugin_data/astrbot_plugin_obsidian_sync/vault`
 - 历史版本：`data/plugin_data/astrbot_plugin_obsidian_sync/history/<相对路径>/<文件名>.<时间戳>.md`
+- 全文索引：`data/plugin_data/astrbot_plugin_obsidian_sync/index.sqlite3`（可删，重启会重建）
+- 审计日志：`data/plugin_data/astrbot_plugin_obsidian_sync/audit.jsonl`（超过 2MB 自动轮转）
 - 卸载插件不会自动删除以上目录，请自行备份。
 
 ## 安全建议
@@ -116,8 +137,9 @@ v1.1.0 有意收紧了默认值，升级后请检查：
 ## 开发与测试
 
 ```text
-main.py            插件入口、WebDAV 生命周期、LLM 工具
+main.py            插件入口、WebDAV 生命周期、LLM 工具、history/undo
 vault_paths.py     路径解析/检索（纯标准库，可单测）
+note_index.py      SQLite FTS5 索引（增量同步、LIKE 回退）
 webdav_guard.py    WSGI 中间件：越界、只读、敏感写入
 tests/             unittest 用例
 ```

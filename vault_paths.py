@@ -162,6 +162,27 @@ def count_notes(root: Path) -> int:
     return sum(1 for _ in iter_note_files(root))
 
 
+def extract_snippets(
+    text: str,
+    keyword: str,
+    snippet_chars: int = 300,
+    snippets_per_note: int = 2,
+) -> list[str]:
+    """从正文中提取包含关键词的行片段（不区分大小写）。"""
+    kw = str(keyword or "").strip().lower()
+    if not kw:
+        return []
+    snippets: list[str] = []
+    for line in str(text).splitlines():
+        if kw in line.lower():
+            snippet = clip_text(line.strip(), snippet_chars)
+            if snippet and snippet not in snippets:
+                snippets.append(snippet)
+            if len(snippets) >= snippets_per_note:
+                break
+    return snippets
+
+
 def search_notes(
     root: Path,
     keyword: str,
@@ -196,15 +217,7 @@ def search_notes(
         if kw not in rel.lower() and kw not in text_low:
             continue
 
-        snippets: list[str] = []
-        if kw in text_low:
-            for line in text.splitlines():
-                if kw in line.lower():
-                    snippet = clip_text(line.strip(), snippet_chars)
-                    if snippet and snippet not in snippets:
-                        snippets.append(snippet)
-                    if len(snippets) >= snippets_per_note:
-                        break
+        snippets = extract_snippets(text, kw, snippet_chars, snippets_per_note)
         if not snippets:
             snippets = ["（文件名匹配）"]
 

@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.2.0
+
+### Added
+
+- SQLite FTS5 全文索引：中文优先 `trigram`，不可用时退 `unicode61`，再不可用则用 LIKE；启动后台构建、按 `mtime/size` 增量同步，Bot 写入后立即刷新。新增 `build_index_on_start`、`index_refresh_seconds` 配置。
+- `/obsidian reindex`：强制重建索引。
+- `/obsidian history <笔记>`、`/obsidian undo <笔记>`：查看历史版本、回滚到最新备份（恢复前会再备份当前内容）。
+- `/obsidian doctor`：检查监听地址、密码来源、`.obsidian/plugins`、索引、历史占用、端口连通性与磁盘剩余。
+- 工具调用审计：写入 `audit.jsonl`（时间、工具、发送者、目标、耗时、成败，不含正文），超过 2MB 自动轮转；`/obsidian audit` 查看最近 20 条。
+- `allow_weak_password` 配置项（默认关闭，仅本机调试用）。
+
+### Changed
+
+- 搜索从全盘扫描改为索引查询，索引查询失败时自动回退原有扫描逻辑。
+- 文档修正：自动生成的密码是 `token_urlsafe(18)` 生成的 24 个字符（约 144 bit 熵），此前误写为"18 位"。
+- 测试从 49 个增加到覆盖索引、历史/撤销、审计、自检。
+
 ## 1.1.0
 
 安全版本。默认值有变化，升级前请阅读 README 的「从 v1.0.x 升级」。

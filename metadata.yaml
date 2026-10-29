@@ -1,14 +1,17 @@
 name: astrbot_plugin_obsidian_sync
 display_name: Obsidian Sync & LLM Vault
-short_desc: 内置 WebDAV 双向同步，并让 LLM 安全地读写你的 Obsidian 笔记库。
+short_desc: 内置 WebDAV 双向同步与全文索引，让 LLM 安全地读写你的 Obsidian 笔记库。
 desc: |-
   内置轻量 WebDAV 服务，适配 Obsidian Remotely Save 双向同步；同时为 LLM 提供
   搜索、读取、写入、浏览笔记的四个原生工具，让 Bot 拥有可检索的长期知识库。
 
+  v1.2.0：SQLite FTS5 全文索引（中文 trigram）、历史版本与 /obsidian undo、
+  doctor 自检与工具调用审计。
+
   v1.1.0 安全基线：默认只监听 127.0.0.1、弱口令自动替换为随机强口令、
   路径校验防越界、禁止 WebDAV 写入 .obsidian/plugins 与 .git、
-  写入前自动备份并支持历史版本。
-version: 1.1.0
+  写入前自动备份。
+version: 1.2.0
 author: 牧奈 & maolbsMd
 repo: https://github.com/maolbsMd/astrbot_plugin_obsidian_sync
 icon: logo.png
