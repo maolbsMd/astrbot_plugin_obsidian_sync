@@ -257,6 +257,66 @@ class PluginInitTest(unittest.TestCase):
         result = asyncio.run(self.plugin.search_obsidian_notes(_Event(), "独特关键词"))
         self.assertIn("indexed.md", result)
 
+    def test_soft_delete_and_restore(self):
+        target = self.plugin.root / "notes" / "d.md"
+        target.parent.mkdir(exist_ok=True)
+        target.write_text("bye", encoding="utf-8")
+
+        batch = self.plugin._soft_delete_sync(target)
+        self.assertFalse(target.exists())
+        self.assertTrue((self.plugin.trash_dir / batch).is_dir())
+        self.assertIn("d.md", "\n".join(self.plugin._trash_lines()))
+
+        restored = self.plugin._restore_sync(batch)
+        self.assertEqual(restored, target)
+        self.assertEqual(target.read_text(encoding="utf-8"), "bye")
+
+    def test_restore_refuses_existing(self):
+        target = self.plugin.root / "d.md"
+        target.write_text("v1", encoding="utf-8")
+        batch = self.plugin._soft_delete_sync(target)
+        target.write_text("v2", encoding="utf-8")
+
+        with self.assertRaises(FileExistsError):
+            self.plugin._restore_sync(batch)
+        self.assertEqual(target.read_text(encoding="utf-8"), "v2")
+
+    def test_restore_unknown_or_bad_id(self):
+        with self.assertRaises(ValueError):
+            self.plugin._restore_sync("does-not-exist")
+        with self.assertRaises(ValueError):
+            self.plugin._restore_sync("../escape")
+
+    def test_delete_disabled_by_default(self):
+        result = asyncio.run(self.plugin.delete_obsidian_note(_Event(), "a.md"))
+        self.assertIn("未启用", result)
+
+    def test_delete_tool_soft_deletes(self):
+        self.plugin.delete_enabled = True
+        target = self.plugin.root / "gone.md"
+        target.write_text("x", encoding="utf-8")
+
+        result = asyncio.run(self.plugin.delete_obsidian_note(_Event(), "gone.md"))
+        self.assertIn("回收站", result)
+        self.assertFalse(target.exists())
+        entries = self.plugin._read_audit_sync(40)
+        self.assertTrue(any("delete" in line for line in entries))
+
+    def test_delete_then_search_excludes(self):
+        self.plugin.delete_enabled = True
+        asyncio.run(self.plugin.write_obsidian_note(_Event(), "tmp.md", "唯一词abc", "append"))
+        asyncio.run(self.plugin.delete_obsidian_note(_Event(), "tmp.md"))
+        result = asyncio.run(self.plugin.search_obsidian_notes(_Event(), "唯一词abc"))
+        self.assertNotIn("tmp.md", result)
+
+    def test_trash_prune_by_count(self):
+        self.plugin.trash_max_items = 1
+        for name in ("a.md", "b.md"):
+            path = self.plugin.root / name
+            path.write_text("x", encoding="utf-8")
+            self.plugin._soft_delete_sync(path)
+        self.assertEqual(len(self.plugin._trash_batches()), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

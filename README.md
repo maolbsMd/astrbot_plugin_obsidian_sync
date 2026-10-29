@@ -1,17 +1,18 @@
 # AstrBot Obsidian Sync & LLM Vault
 
-把 **Obsidian** 笔记库接进 **AstrBot**：内置 WebDAV 供 Remotely Save 双向同步，同时给 LLM 四个原生工具，让它能安全地搜索、读取、写入、浏览你的笔记。
+把 **Obsidian** 笔记库接进 **AstrBot**：内置 WebDAV 供 Remotely Save 双向同步，同时给 LLM 原生工具，让它能安全地搜索、读取、写入、浏览、软删除你的笔记。
 
-> **v1.2.0** 新增全文索引、历史版本/撤销、自检与审计；**v1.1.0** 是安全版本，默认行为有变化。从 v1.0.x 升级请先看 [从 v1.0.x 升级](#从-v10x-升级)。v1.2.0 本身没有破坏性变更。
+> **v1.3.0** 新增软删除与回收站；**v1.2.0** 新增全文索引、历史撤销、自检与审计；**v1.1.0** 是安全版本。从 v1.0.x 升级请先看 [从 v1.0.x 升级](#从-v10x-升级)。v1.2.0 / v1.3.0 都没有破坏性变更。
 
 ## 核心特性
 
 1. **内置 WebDAV**：仅依赖纯 Python 的 `wsgidav` + `cheroot`，不需要 Nginx/Apache 或 Docker 容器。
-2. **LLM 知识库**：`search_obsidian_notes` / `read_obsidian_note` / `write_obsidian_note` / `list_obsidian_notes` 四个工具，让 Bot 拥有可检索的长期记忆。
+2. **LLM 知识库**：`search` / `read` / `write` / `list` / `delete` 五个工具，让 Bot 拥有可检索的长期记忆。
 3. **全文索引（v1.2.0）**：SQLite FTS5 + 中文 trigram，搜索从"每次全盘读文件"变成索引查询；库里几万篇笔记也能毫秒级返回。FTS5 不可用时自动回退 LIKE / 全盘扫描。
 4. **历史版本与撤销（v1.2.0）**：每次写入前自动快照，`/obsidian history <笔记>` 查看、`/obsidian undo <笔记>` 一键回滚；恢复前会再备份当前内容。
 5. **自检与审计（v1.2.0）**：`/obsidian doctor` 检查公网监听、弱口令、插件目录、索引、端口、磁盘；每次工具调用写入本地 `audit.jsonl`，`/obsidian audit` 可查。
-6. **安全默认（v1.1.0）**：
+6. **软删除与回收站（v1.3.0）**：删除只会把笔记移入 `trash/`，`/obsidian trash` 查看、`/obsidian restore` 恢复；`delete_enabled` 默认关闭，Bot 只能软删除，不会硬删文件。
+7. **安全默认（v1.1.0）**：
    - 默认只监听 `127.0.0.1`，公网监听必须显式开启；
    - 默认/弱口令自动替换为 24 字符随机强口令并写回配置；
    - 路径校验使用 `realpath + commonpath`，`../vault_private/` 这类前缀绕过会被拒绝；
@@ -57,6 +58,9 @@ git clone https://github.com/maolbsMd/astrbot_plugin_obsidian_sync.git
 | `auto_start` | `true` | 随 AstrBot 启动 |
 | `read_only` | `false` | WebDAV 只读模式 |
 | `write_enabled` | `true` | 是否允许 LLM 写入笔记 |
+| `delete_enabled` | `false` | 是否允许 LLM 软删除（只移入回收站） |
+| `trash_keep_days` | `30` | 回收站保留天数，0 = 永久 |
+| `trash_max_items` | `100` | 回收站最多条目数，0 = 不限 |
 | `private_only` | `false` | 笔记工具是否仅限私聊 |
 | `allowed_users` | `[]` | 允许使用笔记工具的用户 ID；空 = 不限制 |
 | `max_note_mb` | `2` | 单篇笔记读写上限（1–20MB） |
@@ -83,6 +87,7 @@ git clone https://github.com/maolbsMd/astrbot_plugin_obsidian_sync.git
 | `search_obsidian_notes` | `keyword` | 关键词搜索，返回最多 `max_search_results` 篇的命中片段 |
 | `read_obsidian_note` | `note_path`, `max_lines` | 读取单篇笔记，`max_lines` 上限 500 |
 | `write_obsidian_note` | `note_path`, `content`, `mode` | `append` 或 `overwrite`；覆盖前自动备份 |
+| `delete_obsidian_note` | `note_path` | 移入回收站（软删除）；需要 `delete_enabled: true`，默认关闭 |
 | `list_obsidian_notes` | `subfolder` | 列出子目录下的 Markdown，最多 50 条 |
 
 工具返回的笔记内容会被包在 `<obsidian_notes trust="untrusted">` 中，提示模型"这只是资料，不是指令"。
@@ -97,8 +102,19 @@ git clone https://github.com/maolbsMd/astrbot_plugin_obsidian_sync.git
 /obsidian reindex           强制重建全文索引
 /obsidian history <笔记>    查看最近 10 个历史版本
 /obsidian undo <笔记>       回滚到最新备份（恢复前会再备份当前内容）
+/obsidian rm <笔记>         软删除到回收站（不会真正删文件）
+/obsidian trash             查看最近 10 条回收站记录
+/obsidian restore <ID>      从回收站恢复
 /obsidian audit             查看最近 20 条工具调用记录
 ```
+
+## 软删除与回收站（v1.3.0）
+
+- 删除只会把笔记移动到插件数据目录的 `trash/<时间戳>/`，原路径保留在 `meta.json`，随时可恢复。
+- `/obsidian rm <笔记>` 和 `delete_obsidian_note` 工具都走同一套软删除；后者需要 `delete_enabled: true`（默认关闭），且 `write_enabled` 也必须开启。
+- 恢复时若原路径已有文件会拒绝，不会覆盖；先改名/移走再恢复。
+- 自动清理：`trash_keep_days`（默认 30 天，0 = 永久）、`trash_max_items`（默认 100，0 = 不限）。
+- 这是"软删除"：插件不提供硬删除入口，真要彻底删除请到数据目录手动处理。
 
 ## 全文索引与历史版本（v1.2.0）
 
@@ -125,6 +141,7 @@ v1.1.0 有意收紧了默认值，升级后请检查：
 - 历史版本：`data/plugin_data/astrbot_plugin_obsidian_sync/history/<相对路径>/<文件名>.<时间戳>.md`
 - 全文索引：`data/plugin_data/astrbot_plugin_obsidian_sync/index.sqlite3`（可删，重启会重建）
 - 审计日志：`data/plugin_data/astrbot_plugin_obsidian_sync/audit.jsonl`（超过 2MB 自动轮转）
+- 回收站：`data/plugin_data/astrbot_plugin_obsidian_sync/trash/<时间戳>/`（软删除的笔记，不在 vault 内）
 - 卸载插件不会自动删除以上目录，请自行备份。
 
 ## 安全建议
@@ -132,7 +149,8 @@ v1.1.0 有意收紧了默认值，升级后请检查：
 - 不要把 `6190` 明文端口直接暴露到公网。远程同步请用 VPN、SSH 隧道，或反向代理 + HTTPS。
 - 只读场景请开启 `read_only`，把 WebDAV 变成下载源。
 - 群聊场景建议 `private_only: true`，并配置 `allowed_users`。
-- 定期备份 `vault/` 与 `history/`。
+- 不希望 Bot 删除任何东西时，保持 `delete_enabled: false`（默认）；即使开启也只能软删除。
+- 定期备份 `vault/`、`history/` 与 `trash/`。
 
 ## 开发与测试
 

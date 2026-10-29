@@ -59,6 +59,24 @@
     "default": true,
     "hint": "关闭后 write_obsidian_note 工具会直接拒绝写入。"
   },
+  "delete_enabled": {
+    "type": "bool",
+    "description": "允许 LLM 软删除笔记",
+    "default": false,
+    "hint": "开启后 delete_obsidian_note 只能把笔记移入插件的 trash 回收站，可 /obsidian restore 恢复；不会真正删文件。"
+  },
+  "trash_keep_days": {
+    "type": "int",
+    "description": "回收站保留天数",
+    "default": 30,
+    "hint": "0 表示永久保留；超过天数的条目会在下次删除或启动时自动清理。"
+  },
+  "trash_max_items": {
+    "type": "int",
+    "description": "回收站最多保留条目数",
+    "default": 100,
+    "hint": "0 表示不限制；超出时优先清理最旧的条目。"
+  },
   "private_only": {
     "type": "bool",
     "description": "笔记工具仅限私聊使用",

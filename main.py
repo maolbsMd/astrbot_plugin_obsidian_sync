@@ -1,4 +1,4 @@
-"""Obsidian WebDAV 同步与 LLM 知识库连接插件（v1.2.0）。
+"""Obsidian WebDAV 同步与 LLM 知识库连接插件（v1.3.0）。
 
 安全基线：
 - 默认只监听 127.0.0.1，公网监听需要显式开启 allow_public_bind；
@@ -11,6 +11,10 @@ v1.2.0 新增：
 - SQLite FTS5 全文索引（trigram 中文子串，自动回退 LIKE）；
 - /obsidian history / undo 历史版本与一键回滚；
 - /obsidian doctor 自检、/obsidian audit 工具调用审计。
+
+v1.3.0 新增：
+- 软删除：/obsidian rm 与 delete_obsidian_note 工具只把笔记移入回收站；
+- /obsidian trash / restore 查看与恢复，按天数/条数自动清理。
 """
 
 from __future__ import annotations
@@ -103,7 +107,7 @@ def _is_loopback(host: str) -> bool:
     PLUGIN_NAME,
     "牧奈 & maolbsMd",
     "Obsidian WebDAV 同步与 LLM 知识库连接插件",
-    "1.2.0",
+    "1.3.0",
 )
 class ObsidianSyncPlugin(Star):
     def __init__(self, context: Context, config: dict | None = None):
@@ -116,6 +120,9 @@ class ObsidianSyncPlugin(Star):
         self.username = str(self.config.get("username") or "neko").strip() or "neko"
         self.read_only = bool(self.config.get("read_only", False))
         self.write_enabled = bool(self.config.get("write_enabled", True))
+        self.delete_enabled = bool(self.config.get("delete_enabled", False))
+        self.trash_keep_days = _clamp_int(self.config.get("trash_keep_days"), 30, 0, 3650)
+        self.trash_max_items = _clamp_int(self.config.get("trash_max_items"), 100, 0, 10000)
         self.private_only = bool(self.config.get("private_only", False))
         self.auto_start = bool(self.config.get("auto_start", True))
         self.max_note_mb = _clamp_int(self.config.get("max_note_mb"), 2, 1, 20)
@@ -133,6 +140,7 @@ class ObsidianSyncPlugin(Star):
 
         self.index_db = self.data_dir / "index.sqlite3"
         self.audit_file = self.data_dir / "audit.jsonl"
+        self.trash_dir = self.data_dir / "trash"
         self._last_index_sync = 0.0
 
         self.server_thread: threading.Thread | None = None
@@ -160,6 +168,11 @@ class ObsidianSyncPlugin(Star):
 
         if self.build_index_on_start:
             self._warm_index()
+
+        try:
+            self._prune_trash_sync()
+        except OSError as exc:
+            logger.warning("[ObsidianSync] 回收站清理失败: %s", exc)
 
     # ================= 初始化辅助 =================
 
@@ -440,6 +453,15 @@ class ObsidianSyncPlugin(Star):
         else:
             lines.append("ℹ️ 历史备份: 暂无")
 
+        if self.trash_dir.is_dir():
+            count = sum(1 for item in self.trash_dir.iterdir() if item.is_dir())
+            lines.append(
+                f"ℹ️ 回收站: {count} 项（保留 {self.trash_keep_days} 天 / "
+                f"最多 {self.trash_max_items} 项）"
+            )
+        else:
+            lines.append("ℹ️ 回收站: 暂无")
+
         if self.is_running:
             try:
                 with socket.create_connection((self._probe_host(), self.port), timeout=1.5):
@@ -531,6 +553,51 @@ class ObsidianSyncPlugin(Star):
             else:
                 yield event.plain_result("🧾 最近 20 条工具调用：\n" + "\n".join(entries))
             return
+        if sub == "rm":
+            if not argument:
+                yield event.plain_result("用法: /obsidian rm <笔记路径>")
+                return
+            try:
+                target = await asyncio.to_thread(resolve_note_path, self.root, argument)
+            except PathRejected as exc:
+                yield event.plain_result(f"访问拒绝：{exc}")
+                return
+            if not target.is_file():
+                yield event.plain_result(f"未找到笔记：{clip_text(argument, 120)}")
+                return
+            try:
+                batch = await asyncio.to_thread(self._soft_delete_sync, target)
+            except OSError as exc:
+                yield event.plain_result(f"删除失败：{exc}")
+                return
+            self._last_index_sync = 0.0
+            yield event.plain_result(
+                f"🗑 已移入回收站：{relative_display(self.root, target)}\n"
+                f"ID: {batch}\n恢复: /obsidian restore {batch}"
+            )
+            return
+        if sub == "trash":
+            lines = await asyncio.to_thread(self._trash_lines, 10)
+            if not lines:
+                yield event.plain_result("回收站是空的。")
+            else:
+                yield event.plain_result("🗑 最近删除（最多 10 项）：\n" + "\n".join(lines))
+            return
+        if sub == "restore":
+            if not argument:
+                yield event.plain_result("用法: /obsidian restore <回收站 ID>")
+                return
+            try:
+                target = await asyncio.to_thread(self._restore_sync, argument)
+            except FileExistsError as exc:
+                yield event.plain_result(f"恢复失败：{exc}")
+                return
+            except (ValueError, OSError) as exc:
+                yield event.plain_result(f"恢复失败：{exc}")
+                return
+            self._last_index_sync = 0.0
+            yield event.plain_result(f"♻️ 已恢复：{relative_display(self.root, target)}")
+            return
 
         yield event.plain_result(
             "用法（仅管理员）：\n"
@@ -540,6 +607,9 @@ class ObsidianSyncPlugin(Star):
             "/obsidian reindex\n"
             "/obsidian history <笔记>\n"
             "/obsidian undo <笔记>\n"
+            "/obsidian rm <笔记>\n"
+            "/obsidian trash\n"
+            "/obsidian restore <回收站 ID>\n"
             "/obsidian audit"
         )
 
@@ -685,6 +755,102 @@ class ObsidianSyncPlugin(Star):
             if len(items) >= 50:
                 break
         return items
+
+    # ================= 回收站（软删除） =================
+
+    def _trash_batches(self) -> list[Path]:
+        if not self.trash_dir.is_dir():
+            return []
+        batches = [item for item in self.trash_dir.iterdir() if item.is_dir()]
+        batches.sort(key=lambda item: item.name, reverse=True)
+        return batches
+
+    def _read_trash_meta(self, batch: Path) -> dict:
+        try:
+            with open(batch / "meta.json", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _prune_trash_sync(self) -> None:
+        now = time.time()
+        for index, batch in enumerate(self._trash_batches()):
+            too_many = self.trash_max_items > 0 and index >= self.trash_max_items
+            too_old = False
+            if self.trash_keep_days > 0:
+                try:
+                    too_old = now - batch.stat().st_mtime > self.trash_keep_days * 86400
+                except OSError:
+                    too_old = False
+            if too_many or too_old:
+                shutil.rmtree(batch, ignore_errors=True)
+
+    def _soft_delete_sync(self, target: Path) -> str:
+        if not target.is_file():
+            raise FileNotFoundError(str(target))
+        relative = target.relative_to(self.root)
+        self.trash_dir.mkdir(parents=True, exist_ok=True)
+
+        base = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        batch = self.trash_dir / base
+        suffix = 1
+        while batch.exists():
+            batch = self.trash_dir / f"{base}-{suffix}"
+            suffix += 1
+
+        destination = batch / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(target), str(destination))
+        meta = {
+            "path": relative.as_posix(),
+            "deleted_at": datetime.now().isoformat(timespec="seconds"),
+            "size": destination.stat().st_size,
+        }
+        try:
+            with open(batch / "meta.json", "w", encoding="utf-8") as handle:
+                json.dump(meta, handle, ensure_ascii=False)
+        except OSError as exc:
+            logger.warning("[ObsidianSync] 写回收站元数据失败: %s", exc)
+
+        self._prune_trash_sync()
+        return batch.name
+
+    def _trash_lines(self, limit: int = 10) -> list[str]:
+        lines = []
+        for batch in self._trash_batches()[:limit]:
+            meta = self._read_trash_meta(batch)
+            path = str(meta.get("path") or "?")
+            deleted = str(meta.get("deleted_at") or batch.name)
+            size = meta.get("size") or 0
+            lines.append(f"  {batch.name}  {path}  {size} B  ({deleted})")
+        return lines
+
+    def _restore_sync(self, batch_id: str) -> Path:
+        name = Path(str(batch_id).strip()).name
+        if not name or name != str(batch_id).strip():
+            raise ValueError("非法的回收站 ID")
+        batch = self.trash_dir / name
+        if not batch.is_dir():
+            raise ValueError("回收站里没有这个 ID")
+
+        meta = self._read_trash_meta(batch)
+        relative = str(meta.get("path") or "").strip()
+        if not relative:
+            raise ValueError("回收站记录缺少原始路径")
+
+        target = resolve_note_path(self.root, relative)
+        if target.exists():
+            raise FileExistsError(f"目标已存在，请先移走或改名：{relative}")
+
+        source = batch / Path(relative)
+        if not source.is_file():
+            raise ValueError("回收站里的文件已丢失")
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source), str(target))
+        shutil.rmtree(batch, ignore_errors=True)
+        return target
 
     # ================= 索引 =================
 
@@ -953,3 +1119,38 @@ class ObsidianSyncPlugin(Star):
             return f"📂 笔记列表（最多 50 条）：\n{listing}"
         finally:
             await self._audit(event, "list", str(subfolder), ok, started)
+
+    @llm_tool(name="delete_obsidian_note")
+    async def delete_obsidian_note(self, event: AstrMessageEvent, note_path: str) -> str:
+        """把一篇 Obsidian 笔记移入回收站（软删除，可由管理员恢复）。
+
+        Args:
+            note_path(string): 相对笔记库的路径，例如 'Inbox/临时草稿.md'
+        """
+        started = time.perf_counter()
+        ok = False
+        try:
+            if not self._tool_allowed(event):
+                return DENIED_TOOL
+            if not self.write_enabled or not self.delete_enabled:
+                return "删除功能未启用，请在插件配置中开启 delete_enabled（并保持 write_enabled）。"
+            try:
+                target = await asyncio.to_thread(resolve_note_path, self.root, note_path)
+            except PathRejected as exc:
+                return f"访问拒绝：{exc}"
+            if not target.is_file():
+                return f"未找到笔记：{clip_text(note_path, 120)}"
+
+            try:
+                batch = await asyncio.to_thread(self._soft_delete_sync, target)
+            except OSError as exc:
+                return f"删除失败：{exc}"
+
+            self._last_index_sync = 0.0
+            ok = True
+            return (
+                f"🗑 已移入回收站：{relative_display(self.root, target)}\n"
+                f"ID: {batch}\n管理员可执行 /obsidian restore {batch} 恢复。"
+            )
+        finally:
+            await self._audit(event, "delete", str(note_path), ok, started)

@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.0
+
+### Added
+
+- **软删除 / 回收站**：`/obsidian rm <笔记>` 与 `delete_obsidian_note` 工具只把笔记移动到插件数据目录的 `trash/<时间戳>/`，不会真正删除文件。
+- `/obsidian trash` 查看最近删除（最多 10 项），`/obsidian restore <ID>` 恢复；恢复时若原路径已有文件会拒绝，避免覆盖。
+- 回收站自动清理：`trash_keep_days`（默认 30 天，0 = 永久）、`trash_max_items`（默认 100，0 = 不限）。
+- `delete_enabled` 配置（默认 **关闭**）：即使开启，LLM 也只能软删除；`write_enabled` 关闭时同样禁止删除。
+- `doctor` 增加回收站条目与保留策略展示。
+
+### Changed
+
+- 笔记工具从 4 个增加到 5 个（新增 `delete_obsidian_note`，默认不可用）。
+- 删除后立即失效索引，搜索不会返回已删除笔记。
+
 ## 1.2.0
 
 ### Added
