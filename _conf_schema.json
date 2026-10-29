@@ -20,15 +20,15 @@
   "username": {
     "type": "string",
     "description": "WebDAV 登录用户名",
-    "default": "neko",
-    "hint": "建议改成自定义用户名，不要与其它服务复用。"
+    "default": "",
+    "hint": "留空或仍是旧默认 neko 时，会自动生成随机用户名（vault_xxxxxxxx）并写回配置；升级后请把新用户名同步到 Remotely Save。"
   },
   "password": {
     "type": "string",
     "description": "WebDAV 登录密码",
     "default": "",
     "secret": true,
-    "hint": "留空或仍为默认弱口令时，插件会自动生成 18 位随机密码并写回本配置。要求至少 12 位。"
+    "hint": "留空或仍为默认弱口令时，插件会自动生成 24 个字符的随机密码并写回本配置。要求至少 12 位。"
   },
   "vault_path": {
     "type": "string",

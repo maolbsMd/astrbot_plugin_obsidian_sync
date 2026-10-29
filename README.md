@@ -2,7 +2,7 @@
 
 把 **Obsidian** 接进 **AstrBot**：手机、电脑自动双向同步你的笔记，同时让 AI 帮你搜索、整理、记住每一篇笔记。
 
-> **v1.3.2** 起作者改为 `maolbsMd`（plugin_id 随之变化，功能不变）。**v1.3.1** 起展示名改为「Obsidian 第二大脑」。**v1.3.0** 新增软删除与回收站；**v1.2.0** 新增全文索引、历史撤销、自检与审计；**v1.1.0** 是安全版本。从 v1.0.x 升级请先看 [从 v1.0.x 升级](#从-v10x-升级)。v1.2.0 之后都没有破坏性变更。
+> **v1.3.3** 移除默认用户名 `neko`，改为自动生成 `vault_xxxxxxxx`（升级后需更新 Remotely Save 用户名）。**v1.3.2** 起作者改为 `maolbsMd`（plugin_id 随之变化，功能不变）。**v1.3.1** 起展示名改为「Obsidian 第二大脑」。**v1.3.0** 新增软删除与回收站；**v1.2.0** 新增全文索引、历史撤销、自检与审计；**v1.1.0** 是安全版本。从 v1.0.x 升级请先看 [从 v1.0.x 升级](#从-v10x-升级)。
 
 ## 核心特性
 
@@ -15,6 +15,7 @@
 7. **安全默认（v1.1.0）**：
    - 默认只监听 `127.0.0.1`，公网监听必须显式开启；
    - 默认/弱口令自动替换为 24 字符随机强口令并写回配置；
+   - 不预置默认用户名：留空或旧默认 `neko` 会生成 `vault_xxxxxxxx`；
    - 路径校验使用 `realpath + commonpath`，`../vault_private/` 这类前缀绕过会被拒绝；
    - WebDAV 禁止写入 `.obsidian/plugins`、`community-plugins.json`、`.git`，堵住"同步一个恶意插件到用户电脑"的链路；
    - 支持只读模式、私聊限制、用户白名单、单篇笔记大小上限；
@@ -26,6 +27,7 @@
 |---|---|---|
 | 监听地址 | `127.0.0.1` | 远程访问需开启 `allow_public_bind` |
 | 密码 | 自动生成 | 弱口令/空口令启动时替换为随机 24 字符密码并写回配置 |
+| 用户名 | 自动生成 | 旧默认 `neko` 会迁移为随机 `vault_xxxxxxxx` |
 | 路径校验 | 开启 | 越界、绝对路径、隐藏目录一律拒绝 |
 | WebDAV 写入 | 可写 | 但 `.obsidian/plugins`、`community-plugins.json`、`.git` 固定 403 |
 | LLM 写入 | 开启 | 可关 `write_enabled`；`mode` 仅接受 `append` / `overwrite` |
@@ -51,7 +53,7 @@ git clone https://github.com/maolbsMd/astrbot_plugin_obsidian_sync.git
 | `host` | `127.0.0.1` | WebDAV 监听地址 |
 | `allow_public_bind` | `false` | 允许监听非回环地址；关闭时 `0.0.0.0` 会自动回退 |
 | `port` | `6190` | WebDAV 端口 |
-| `username` | `neko` | WebDAV 用户名 |
+| `username` | 自动生成 | 留空或旧默认 `neko` 时生成 `vault_xxxxxxxx` |
 | `password` | 空（自动生成） | 至少 12 位；`secret` 字段在面板中遮罩显示 |
 | `vault_path` | 空 | 留空 = `data/plugin_data/astrbot_plugin_obsidian_sync/vault`，也可填绝对路径 |
 | `vault_subdir` | 空 | 留空自动检测 `obsidian_vault` 子目录 |
@@ -126,14 +128,15 @@ git clone https://github.com/maolbsMd/astrbot_plugin_obsidian_sync.git
 
 ## 从 v1.0.x 升级
 
-v1.1.0 有意收紧了默认值，升级后请检查：
+v1.1.0 收紧了默认值，v1.3.3 又移除了默认用户名，升级后请检查：
 
-1. **密码会被重置**：如果原来用的是 `change_me_to_your_password` 等弱口令，插件会自动生成新密码并写回配置。到 AstrBot 面板的插件配置里复制新密码，更新 Remotely Save。
-2. **公网监听需要开关**：`host` 为 `0.0.0.0` 时，必须同时开启 `allow_public_bind`，否则会回退到 `127.0.0.1`（`/obsidian status` 会显示"公网监听已被拦截"）。
-3. **旧默认路径自动迁移**：`vault_path` 仍是旧默认值 `data/plugin_data/.../vault` 时，会改用 `StarTools.get_data_dir()` 解析，不再依赖进程工作目录。
-4. **`.obsidian/plugins` 写入返回 403**：这是安全修复，不是 bug。请关闭 Remotely Save 的配置目录同步。
-5. **写入不再"拼错就覆盖"**：`mode` 只接受 `append` / `overwrite`，其它值会报错。
-6. **插件重载会真正关闭端口**：新增 `terminate()`，改密码后重载插件即可生效。
+1. **用户名会变**：v1.3.3 起不再使用默认 `neko`，会自动生成 `vault_xxxxxxxx`。到面板复制新用户名，更新 Remotely Save；否则会收到 401。
+2. **密码会被重置**：如果原来用的是 `change_me_to_your_password` 等弱口令，插件会自动生成新密码并写回配置。到 AstrBot 面板的插件配置里复制新密码，更新 Remotely Save。
+3. **公网监听需要开关**：`host` 为 `0.0.0.0` 时，必须同时开启 `allow_public_bind`，否则会回退到 `127.0.0.1`（`/obsidian status` 会显示"公网监听已被拦截"）。
+4. **旧默认路径自动迁移**：`vault_path` 仍是旧默认值 `data/plugin_data/.../vault` 时，会改用 `StarTools.get_data_dir()` 解析，不再依赖进程工作目录。
+5. **`.obsidian/plugins` 写入返回 403**：这是安全修复，不是 bug。请关闭 Remotely Save 的配置目录同步。
+6. **写入不再"拼错就覆盖"**：`mode` 只接受 `append` / `overwrite`，其它值会报错。
+7. **插件重载会真正关闭端口**：新增 `terminate()`，改密码后重载插件即可生效。
 
 ## 数据与备份
 

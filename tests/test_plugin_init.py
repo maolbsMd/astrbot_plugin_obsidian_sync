@@ -136,6 +136,24 @@ class PluginInitTest(unittest.TestCase):
         self.assertEqual(self.plugin.password, "s" * 20)
         self.assertFalse(self.plugin._password_generated)
 
+    def test_username_generated_when_empty(self):
+        self.assertTrue(self.plugin.username.startswith("vault_"))
+        self.assertTrue(self.plugin._username_generated)
+
+    def test_legacy_username_migrated(self):
+        config = dict(self.config, username="neko")
+        plugin = plugin_module.ObsidianSyncPlugin(object(), config)
+        self.assertNotEqual(plugin.username.lower(), "neko")
+        self.assertTrue(plugin.username.startswith("vault_"))
+        self.assertTrue(plugin._username_generated)
+        self.assertEqual(config["username"], plugin.username)
+
+    def test_custom_username_kept(self):
+        config = dict(self.config, username="my_custom_user")
+        plugin = plugin_module.ObsidianSyncPlugin(object(), config)
+        self.assertEqual(plugin.username, "my_custom_user")
+        self.assertFalse(plugin._username_generated)
+
     def test_public_bind_requires_opt_in(self):
         config = dict(self.config, host="0.0.0.0", port="not-a-port")
         plugin = plugin_module.ObsidianSyncPlugin(object(), config)
