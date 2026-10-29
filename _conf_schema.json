@@ -2,31 +2,91 @@
   "host": {
     "type": "string",
     "description": "WebDAV 监听地址",
-    "default": "0.0.0.0"
+    "default": "127.0.0.1",
+    "hint": "默认只允许本机访问。需要手机/其他设备远程同步时改为 0.0.0.0，并在下方开启 allow_public_bind；强烈建议同时配置 TLS 或反向代理。"
+  },
+  "allow_public_bind": {
+    "type": "bool",
+    "description": "允许监听非回环地址",
+    "default": false,
+    "hint": "未开启时，若 host 填了 0.0.0.0 等非回环地址，服务会自动回退到 127.0.0.1 并在日志中提示。"
   },
   "port": {
     "type": "int",
-    "description": "WebDAV 服务端口（请避开 6199、6185 等占用端口）",
-    "default": 6190
+    "description": "WebDAV 服务端口",
+    "default": 6190,
+    "hint": "请避开 6199、6185 等已占用端口。"
   },
   "username": {
     "type": "string",
-    "description": "WebDAV 登录用户名（建议修改为自定义用户名）",
-    "default": "neko"
+    "description": "WebDAV 登录用户名",
+    "default": "neko",
+    "hint": "建议改成自定义用户名，不要与其它服务复用。"
   },
   "password": {
     "type": "string",
-    "description": "WebDAV 登录密码（强烈建议安装后立即在面板中修改为强密码，避免公网弱口令风险）",
-    "default": "change_me_to_your_password"
+    "description": "WebDAV 登录密码",
+    "default": "",
+    "secret": true,
+    "hint": "留空或仍为默认弱口令时，插件会自动生成 18 位随机密码并写回本配置。要求至少 12 位。"
   },
   "vault_path": {
     "type": "string",
-    "description": "Obsidian 笔记库持久化存储目录。默认保存至插件数据目录 data/plugin_data/astrbot_plugin_obsidian_sync/vault；如需挂载宿主机已有外部 Obsidian 库，可配置为绝对路径。",
-    "default": "data/plugin_data/astrbot_plugin_obsidian_sync/vault"
+    "description": "Obsidian 笔记库目录",
+    "default": "",
+    "hint": "留空表示 data/plugin_data/astrbot_plugin_obsidian_sync/vault。也可填宿主机已有库的绝对路径。"
+  },
+  "vault_subdir": {
+    "type": "string",
+    "description": "笔记库子目录",
+    "default": "",
+    "hint": "留空时自动检测 obsidian_vault 子目录（兼容 Remotely Save 子目录模式）；用其它子目录名时在此显式填写。"
   },
   "auto_start": {
     "type": "bool",
-    "description": "启动 AstrBot 时是否自动启动 WebDAV 服务",
+    "description": "启动 AstrBot 时自动启动 WebDAV 服务",
     "default": true
+  },
+  "read_only": {
+    "type": "bool",
+    "description": "WebDAV 只读模式",
+    "default": false,
+    "hint": "开启后客户端只能下载/浏览，不能上传、删除或重命名。"
+  },
+  "write_enabled": {
+    "type": "bool",
+    "description": "允许 LLM 写入笔记",
+    "default": true,
+    "hint": "关闭后 write_obsidian_note 工具会直接拒绝写入。"
+  },
+  "private_only": {
+    "type": "bool",
+    "description": "笔记工具仅限私聊使用",
+    "default": false,
+    "hint": "开启后群聊中不会调用读写/搜索工具，避免私人日记被发到群里。"
+  },
+  "allowed_users": {
+    "type": "list",
+    "description": "允许使用笔记工具的用户 ID 列表",
+    "default": [],
+    "hint": "留空表示不限制；填写后仅列表中的发送者（或 AstrBot 管理员）可用。"
+  },
+  "max_note_mb": {
+    "type": "int",
+    "description": "单篇笔记读取/写入上限（MB）",
+    "default": 2,
+    "hint": "取值 1-20。超过上限的文件在搜索时会被跳过，读取/写入会被拒绝。"
+  },
+  "max_search_results": {
+    "type": "int",
+    "description": "搜索结果条数上限",
+    "default": 5,
+    "hint": "取值 1-20。"
+  },
+  "backup_keep": {
+    "type": "int",
+    "description": "每篇笔记保留的历史版本数",
+    "default": 10,
+    "hint": "0 表示不备份。备份存放在插件数据目录 history/ 下，不会同步进笔记库。"
   }
 }
