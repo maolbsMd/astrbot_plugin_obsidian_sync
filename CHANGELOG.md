@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.2
+
+### Changed
+
+- 作者字段改为 **`maolbsMd`**。
+- 注意：`author` 同时是插件身份 `author/name` 的一部分，plugin_id 会随之变化。如果已经在市场发布过，需要在市场后台按新身份更新/重新提交一次。
+- 功能无变化。
+
 ## 1.3.1
 
 ### Changed
