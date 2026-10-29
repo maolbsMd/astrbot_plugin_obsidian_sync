@@ -33,4 +33,4 @@
 - 代码拆分：`vault_paths.py`（纯逻辑）、`webdav_guard.py`（WSGI 中间件），便于测试。
 - 去掉 `from astrbot.api.all import *`，改为显式导入；工具 docstring 补 `Args:`。
 - `metadata.yaml`：版本 `1.1.0`、补充 `short_desc`、图标改为 `logo.png`、去掉文档外的平台键。
-- 新增 `tests/`（49 个用例，覆盖路径绕过回归、WSGI 守卫、初始化与写入流程）。
+- 新增 `tests/`（49 个用例，覆盖路径绕过回归、WSGI 守卫、初始化与写入流程）与 GitHub Actions CI（ruff + unittest + py_compile）。

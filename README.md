@@ -128,7 +128,7 @@ python -m ruff check .
 python -m ruff format --check .
 ```
 
-提交前请依次执行以上三条命令；CI 可参照 PR 说明里的 workflow 模板自行启用。
+CI 会跑 ruff + unittest + py_compile。
 
 ## License
 
