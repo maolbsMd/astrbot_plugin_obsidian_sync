@@ -1,4 +1,4 @@
-"""Obsidian WebDAV 同步与 LLM 知识库连接插件（v1.3.0）。
+"""Obsidian 第二大脑 · WebDAV 同步与 LLM 知识库插件（v1.3.1）。
 
 安全基线：
 - 默认只监听 127.0.0.1，公网监听需要显式开启 allow_public_bind；
@@ -106,8 +106,8 @@ def _is_loopback(host: str) -> bool:
 @register(
     PLUGIN_NAME,
     "牧奈 & maolbsMd",
-    "Obsidian WebDAV 同步与 LLM 知识库连接插件",
-    "1.3.0",
+    "Obsidian 第二大脑：同步、索引与 AI 笔记工具",
+    "1.3.1",
 )
 class ObsidianSyncPlugin(Star):
     def __init__(self, context: Context, config: dict | None = None):

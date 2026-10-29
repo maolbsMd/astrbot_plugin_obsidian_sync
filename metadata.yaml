@@ -1,9 +1,11 @@
 name: astrbot_plugin_obsidian_sync
-display_name: Obsidian Sync & LLM Vault
-short_desc: 内置 WebDAV 双向同步与全文索引，让 LLM 安全地读写你的 Obsidian 笔记库。
+display_name: Obsidian 第二大脑
+short_desc: 手机电脑自动同步 Obsidian，AI 帮你搜索、整理并记住每一篇笔记。
 desc: |-
-  内置轻量 WebDAV 服务，适配 Obsidian Remotely Save 双向同步；同时为 LLM 提供
+  把 Obsidian 接进 AstrBot：内置 WebDAV 供 Remotely Save 双向同步；同时为 LLM 提供
   搜索、读取、写入、浏览、软删除笔记的原生工具，让 Bot 拥有可检索的长期知识库。
+
+  v1.3.1：市场展示名改为「Obsidian 第二大脑」，功能与 1.3.0 一致。
 
   v1.3.0：软删除与回收站（/obsidian rm、trash、restore），delete 工具默认关闭。
 
@@ -13,7 +15,7 @@ desc: |-
   v1.1.0 安全基线：默认只监听 127.0.0.1、弱口令自动替换为随机强口令、
   路径校验防越界、禁止 WebDAV 写入 .obsidian/plugins 与 .git、
   写入前自动备份。
-version: 1.3.0
+version: 1.3.1
 author: 牧奈 & maolbsMd
 repo: https://github.com/maolbsMd/astrbot_plugin_obsidian_sync
 icon: logo.png
@@ -36,4 +38,7 @@ tags:
   - WebDAV
   - 同步
   - 笔记
+  - 第二大脑
+  - 知识库
+  - AI
 astrbot_version: ">=4.25"
