@@ -1,0 +1,15 @@
+target-version = "py310"
+line-length = 100
+
+[lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "S", "RUF", "ASYNC"]
+ignore = [
+  "S101",   # 测试中使用 assert
+  "RUF001", # 项目中文本就是中文，全角标点不是笔误
+  "RUF002",
+  "RUF003",
+]
+
+[lint.per-file-ignores]
+# 测试里会故意构造弱口令与 0.0.0.0 绑定
+"tests/*" = ["S104", "S106"]

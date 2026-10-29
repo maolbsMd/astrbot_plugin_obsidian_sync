@@ -1,2 +1,2 @@
-wsgidav>=4.3.0
-cheroot>=11.0.0
+wsgidav>=4.3,<5
+cheroot>=11,<12
