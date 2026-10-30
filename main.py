@@ -1,4 +1,4 @@
-"""Obsidian 第二大脑 · WebDAV 同步与 LLM 知识库插件（v1.3.3）。
+"""Obsidian 第二大脑 · WebDAV 同步与 LLM 知识库插件（v1.4.0）。
 
 安全基线：
 - 默认只监听 127.0.0.1，公网监听需要显式开启 allow_public_bind；
@@ -16,6 +16,9 @@ v1.2.0 新增：
 v1.3.0 新增：
 - 软删除：/obsidian rm 与 delete_obsidian_note 工具只把笔记移入回收站；
 - /obsidian trash / restore 查看与恢复，按天数/条数自动清理。
+
+v1.4.0 新增：
+- insert_obsidian_attachment：把聊天里的图片/文件保存到 attachments/ 并插入笔记。
 """
 
 from __future__ import annotations
@@ -71,6 +74,21 @@ try:  # 以包方式加载（AstrBot 正常路径）
 except ImportError:  # pragma: no cover - 兼容直接以脚本方式加载
     from webdav_guard import DavGuard  # type: ignore[no-redef]
 
+try:  # 以包方式加载（AstrBot 正常路径）
+    from .attachments import (
+        AttachmentError,
+        detect_image,
+        embed_markup,
+        save_attachment,
+    )
+except ImportError:  # pragma: no cover - 兼容直接以脚本方式加载
+    from attachments import (  # type: ignore[no-redef]
+        AttachmentError,
+        detect_image,
+        embed_markup,
+        save_attachment,
+    )
+
 PLUGIN_NAME = "astrbot_plugin_obsidian_sync"
 LEGACY_VAULT_PATH = "data/plugin_data/astrbot_plugin_obsidian_sync/vault"
 MB = 1024 * 1024
@@ -109,7 +127,7 @@ def _is_loopback(host: str) -> bool:
     PLUGIN_NAME,
     "maolbsMd",
     "Obsidian 第二大脑：同步、索引与 AI 笔记工具",
-    "1.3.3",
+    "1.4.0",
 )
 class ObsidianSyncPlugin(Star):
     def __init__(self, context: Context, config: dict | None = None):
@@ -135,6 +153,10 @@ class ObsidianSyncPlugin(Star):
         self.index_refresh_seconds = _clamp_int(
             self.config.get("index_refresh_seconds"), 60, 0, 3600
         )
+        self.attachment_dir = (
+            str(self.config.get("attachment_dir") or "attachments").strip() or "attachments"
+        )
+        self.max_attachment_mb = _clamp_int(self.config.get("max_attachment_mb"), 10, 1, 50)
 
         raw_users = self.config.get("allowed_users") or []
         self.allowed_users = {str(user).strip() for user in raw_users if str(user).strip()}
@@ -678,6 +700,31 @@ class ObsidianSyncPlugin(Star):
             content = clip_text(content, self.max_return_chars)
         return {"content": content, "total": total, "shown": len(shown)}
 
+    def _read_attachment_sync(self, path: Path) -> bytes:
+        if not path.is_file():
+            raise AttachmentError("附件文件不存在")
+        if path.stat().st_size > self.max_attachment_mb * MB:
+            raise AttachmentError(f"附件超过 {self.max_attachment_mb}MB 上限")
+        return path.read_bytes()
+
+    async def _message_attachment(self, event: AstrMessageEvent) -> tuple[Path, str, str]:
+        """取当前消息里的第一个图片/文件组件，返回 (本地路径, 类型, 文件名)。"""
+        message = getattr(getattr(event, "message_obj", None), "message", None) or []
+        for component in message:
+            converter = getattr(component, "convert_to_file_path", None)
+            if callable(converter):
+                path = await converter()
+                if path:
+                    return Path(path), "image", Path(path).name
+                continue
+            getter = getattr(component, "get_file", None)
+            if callable(getter):
+                path = await getter()
+                if path:
+                    name = getattr(component, "name", "") or Path(path).name
+                    return Path(path), "file", name
+        raise AttachmentError("当前消息里没有图片或文件，请先在聊天里发送图片/文件，再让我插入。")
+
     # ================= 历史版本 =================
 
     def _history_dir(self, target: Path) -> Path | None:
@@ -1185,3 +1232,68 @@ class ObsidianSyncPlugin(Star):
             )
         finally:
             await self._audit(event, "delete", str(note_path), ok, started)
+
+    @llm_tool(name="insert_obsidian_attachment")
+    async def insert_obsidian_attachment(
+        self, event: AstrMessageEvent, note_path: str, caption: str = ""
+    ) -> str:
+        """把当前消息里的图片或文件保存到笔记库，并插入到指定笔记。
+
+        Args:
+            note_path(string): 相对笔记库的笔记路径，附件会追加到这篇笔记
+            caption(string): 可选说明文字，插在附件下方
+        """
+        started = time.perf_counter()
+        ok = False
+        try:
+            if not self._tool_allowed(event):
+                return DENIED_TOOL
+            if not self.write_enabled:
+                return "写入功能未启用，无法插入附件。"
+            try:
+                target = await asyncio.to_thread(resolve_note_path, self.root, note_path)
+            except PathRejected as exc:
+                return f"访问拒绝：{exc}"
+
+            try:
+                source, kind, original_name = await self._message_attachment(event)
+                data = await asyncio.to_thread(self._read_attachment_sync, source)
+            except AttachmentError as exc:
+                return str(exc)
+            except OSError as exc:
+                return f"读取附件失败：{exc}"
+            except ValueError as exc:
+                return f"读取附件失败：{exc}"
+
+            image_ext = detect_image(data) if kind == "image" else ""
+            if kind == "image" and not image_ext:
+                return "暂不支持这种图片格式（仅支持 PNG/JPEG/GIF/WebP）。"
+
+            try:
+                directory = await asyncio.to_thread(
+                    resolve_dir_path, self.root, self.attachment_dir
+                )
+                saved = await asyncio.to_thread(
+                    save_attachment,
+                    self.root,
+                    directory,
+                    data,
+                    original_name,
+                    image_ext,
+                )
+            except (PathRejected, AttachmentError, OSError) as exc:
+                return f"保存附件失败：{exc}"
+
+            relative = relative_display(self.root, saved)
+            embed = embed_markup(relative, bool(image_ext), caption)
+            async with self._write_lock:
+                try:
+                    await asyncio.to_thread(self._write_note_sync, target, embed, "append")
+                except OSError as exc:
+                    return f"写入笔记失败：{exc}"
+
+            self._last_index_sync = 0.0
+            ok = True
+            return f"🖼 已插入附件：{relative}\n\n{embed}"
+        finally:
+            await self._audit(event, "attach", str(note_path), ok, started)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import sys
 import tempfile
 import types
@@ -103,6 +104,39 @@ class _Event:
 
     def is_admin(self) -> bool:
         return self._admin
+
+
+class _FakeImage:
+    def __init__(self, path: Path) -> None:
+        self._path = str(path)
+
+    async def convert_to_file_path(self) -> str:
+        return self._path
+
+
+class _FakeFile:
+    def __init__(self, path: Path, name: str) -> None:
+        self._path = str(path)
+        self.name = name
+
+    async def get_file(self) -> str:
+        return self._path
+
+
+class _FakeMessage:
+    def __init__(self, components) -> None:
+        self.message = components
+
+
+class _EventWithMessage(_Event):
+    def __init__(self, components, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.message_obj = _FakeMessage(components)
+
+
+PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
 
 
 class PluginInitTest(unittest.TestCase):
@@ -334,6 +368,59 @@ class PluginInitTest(unittest.TestCase):
             path.write_text("x", encoding="utf-8")
             self.plugin._soft_delete_sync(path)
         self.assertEqual(len(self.plugin._trash_batches()), 1)
+
+    def test_insert_image_into_note(self):
+        source = self.plugin.root / "inbox.png"
+        source.write_bytes(PNG_BYTES)
+        event = _EventWithMessage([_FakeImage(source)])
+
+        result = asyncio.run(self.plugin.insert_obsidian_attachment(event, "notes/pic.md", "截图"))
+        self.assertIn("![[attachments/", result)
+        note = (self.plugin.root / "notes" / "pic.md").read_text(encoding="utf-8")
+        self.assertIn("![[attachments/", note)
+        self.assertIn("截图", note)
+        self.assertEqual(len(list((self.plugin.root / "attachments").glob("*.png"))), 1)
+        entries = self.plugin._read_audit_sync(40)
+        self.assertTrue(any("attach" in line for line in entries))
+
+    def test_insert_file_links_instead_of_embedding(self):
+        source = self.plugin.root / "report.pdf"
+        source.write_bytes(b"%PDF-1.4 test")
+        event = _EventWithMessage([_FakeFile(source, "报告.pdf")])
+
+        result = asyncio.run(self.plugin.insert_obsidian_attachment(event, "notes/doc.md"))
+        self.assertIn("[[attachments/", result)
+        self.assertNotIn("![[", result)
+        self.assertEqual(len(list((self.plugin.root / "attachments").glob("*.pdf"))), 1)
+
+    def test_insert_attachment_without_message_attachment(self):
+        result = asyncio.run(self.plugin.insert_obsidian_attachment(_Event(), "notes/x.md"))
+        self.assertIn("没有图片或文件", result)
+
+    def test_insert_attachment_rejects_oversize(self):
+        self.plugin.max_attachment_mb = 1
+        source = self.plugin.root / "big.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * (2 * 1024 * 1024))
+        event = _EventWithMessage([_FakeImage(source)])
+
+        result = asyncio.run(self.plugin.insert_obsidian_attachment(event, "notes/big.md"))
+        self.assertIn("上限", result)
+
+    def test_insert_attachment_rejects_escape_path(self):
+        source = self.plugin.root / "a.png"
+        source.write_bytes(PNG_BYTES)
+        event = _EventWithMessage([_FakeImage(source)])
+
+        result = asyncio.run(self.plugin.insert_obsidian_attachment(event, "../escape.md"))
+        self.assertIn("访问拒绝", result)
+
+    def test_insert_attachment_rejects_unknown_image(self):
+        source = self.plugin.root / "fake.png"
+        source.write_bytes(b"not an image")
+        event = _EventWithMessage([_FakeImage(source)])
+
+        result = asyncio.run(self.plugin.insert_obsidian_attachment(event, "notes/a.md"))
+        self.assertIn("暂不支持", result)
 
 
 if __name__ == "__main__":

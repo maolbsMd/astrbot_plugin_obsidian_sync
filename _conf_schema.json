@@ -101,6 +101,18 @@
     "default": 5,
     "hint": "取值 1-20。"
   },
+  "attachment_dir": {
+    "type": "string",
+    "description": "附件保存目录（相对笔记库）",
+    "default": "attachments",
+    "hint": "insert_obsidian_attachment 会把聊天里的图片/文件保存到这里，并插入 ![[...]] 嵌入。"
+  },
+  "max_attachment_mb": {
+    "type": "int",
+    "description": "单个附件大小上限（MB）",
+    "default": 10,
+    "hint": "取值 1-50，超过上限的图片/文件会被拒绝。"
+  },
   "build_index_on_start": {
     "type": "bool",
     "description": "启动时后台构建全文索引",

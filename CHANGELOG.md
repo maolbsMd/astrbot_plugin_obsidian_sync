@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.4.0
+
+### Added
+
+- 新增 `insert_obsidian_attachment` 工具：把**当前消息**里的图片/文件保存到笔记库的 `attachments/`，并追加 `![[...]]`（图片）或 `[[...]]`（其它文件）到指定笔记。
+- 图片按文件头识别 PNG/JPEG/GIF/WebP，重名自动加时间戳+随机后缀，不会覆盖已有附件。
+- 支持可选 `caption` 说明文字，插在附件下方。
+- 新配置：`attachment_dir`（默认 `attachments`）、`max_attachment_mb`（默认 10，1–50）。
+- 附件插入后立即失效索引，笔记马上可以被搜索到。
+
+### Notes
+
+- 只读取当前消息里的附件，不接受模型传入的任意本地路径或 URL，避免被提示注入诱导读取服务器文件。
+- 需要 `write_enabled: true`；附件大小超过上限会拒绝。
+
 ## 1.3.3
 
 ### Changed

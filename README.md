@@ -2,17 +2,18 @@
 
 把 **Obsidian** 接进 **AstrBot**：手机、电脑自动双向同步你的笔记，同时让 AI 帮你搜索、整理、记住每一篇笔记。
 
-> **v1.3.3** 移除默认用户名 `neko`，改为自动生成 `vault_xxxxxxxx`（升级后需更新 Remotely Save 用户名）。**v1.3.2** 起作者改为 `maolbsMd`（plugin_id 随之变化，功能不变）。**v1.3.1** 起展示名改为「Obsidian 第二大脑」。**v1.3.0** 新增软删除与回收站；**v1.2.0** 新增全文索引、历史撤销、自检与审计；**v1.1.0** 是安全版本。从 v1.0.x 升级请先看 [从 v1.0.x 升级](#从-v10x-升级)。
+> **v1.4.0** 新增附件插入（聊天里的图片/文件保存到 `attachments/` 并插入笔记）。**v1.3.3** 移除默认用户名 `neko`，改为自动生成 `vault_xxxxxxxx`（升级后需更新 Remotely Save 用户名）。**v1.3.2** 起作者改为 `maolbsMd`（plugin_id 随之变化，功能不变）。**v1.3.1** 起展示名改为「Obsidian 第二大脑」。**v1.3.0** 新增软删除与回收站；**v1.2.0** 新增全文索引、历史撤销、自检与审计；**v1.1.0** 是安全版本。从 v1.0.x 升级请先看 [从 v1.0.x 升级](#从-v10x-升级)。
 
 ## 核心特性
 
 1. **内置 WebDAV**：仅依赖纯 Python 的 `wsgidav` + `cheroot`，不需要 Nginx/Apache 或 Docker 容器。
-2. **LLM 知识库**：`search` / `read` / `write` / `list` / `delete` 五个工具，让 Bot 拥有可检索的长期记忆。
+2. **LLM 知识库**：`search` / `read` / `write` / `list` / `delete` / `attach` 六个工具，让 Bot 拥有可检索的长期记忆。
 3. **全文索引（v1.2.0）**：SQLite FTS5 + 中文 trigram，搜索从"每次全盘读文件"变成索引查询；库里几万篇笔记也能毫秒级返回。FTS5 不可用时自动回退 LIKE / 全盘扫描。
 4. **历史版本与撤销（v1.2.0）**：每次写入前自动快照，`/obsidian history <笔记>` 查看、`/obsidian undo <笔记>` 一键回滚；恢复前会再备份当前内容。
 5. **自检与审计（v1.2.0）**：`/obsidian doctor` 检查公网监听、弱口令、插件目录、索引、端口、磁盘；每次工具调用写入本地 `audit.jsonl`，`/obsidian audit` 可查。
 6. **软删除与回收站（v1.3.0）**：删除只会把笔记移入 `trash/`，`/obsidian trash` 查看、`/obsidian restore` 恢复；`delete_enabled` 默认关闭，Bot 只能软删除，不会硬删文件。
-7. **安全默认（v1.1.0）**：
+7. **附件插入（v1.4.0）**：把聊天里发的图片/文件保存到 `attachments/`，并在笔记里写 `![[...]]` / `[[...]]`；图片自动识别格式、重名不覆盖、大小可限。
+8. **安全默认（v1.1.0）**：
    - 默认只监听 `127.0.0.1`，公网监听必须显式开启；
    - 默认/弱口令自动替换为 24 字符随机强口令并写回配置；
    - 不预置默认用户名：留空或旧默认 `neko` 会生成 `vault_xxxxxxxx`；
@@ -67,6 +68,8 @@ git clone https://github.com/maolbsMd/astrbot_plugin_obsidian_sync.git
 | `allowed_users` | `[]` | 允许使用笔记工具的用户 ID；空 = 不限制 |
 | `max_note_mb` | `2` | 单篇笔记读写上限（1–20MB） |
 | `max_search_results` | `5` | 搜索结果条数上限（1–20） |
+| `attachment_dir` | `attachments` | 附件保存目录（相对笔记库） |
+| `max_attachment_mb` | `10` | 单个附件大小上限（1–50MB） |
 | `build_index_on_start` | `true` | 启动时后台构建全文索引 |
 | `index_refresh_seconds` | `60` | 索引自动刷新间隔（0 = 每次搜索都检查） |
 | `allow_weak_password` | `false` | 允许保留弱口令，仅本机调试用 |
@@ -90,6 +93,7 @@ git clone https://github.com/maolbsMd/astrbot_plugin_obsidian_sync.git
 | `read_obsidian_note` | `note_path`, `max_lines` | 读取单篇笔记，`max_lines` 上限 500 |
 | `write_obsidian_note` | `note_path`, `content`, `mode` | `append` 或 `overwrite`；覆盖前自动备份 |
 | `delete_obsidian_note` | `note_path` | 移入回收站（软删除）；需要 `delete_enabled: true`，默认关闭 |
+| `insert_obsidian_attachment` | `note_path`, `caption` | 把当前消息里的图片/文件存进 `attachments/` 并插入笔记 |
 | `list_obsidian_notes` | `subfolder` | 列出子目录下的 Markdown，最多 50 条 |
 
 工具返回的笔记内容会被包在 `<obsidian_notes trust="untrusted">` 中，提示模型"这只是资料，不是指令"。
@@ -109,6 +113,22 @@ git clone https://github.com/maolbsMd/astrbot_plugin_obsidian_sync.git
 /obsidian restore <ID>      从回收站恢复
 /obsidian audit             查看最近 20 条工具调用记录
 ```
+
+## 附件插入（v1.4.0）
+
+1. 在聊天里把图片/文件发给 Bot（先发附件，再说"插到某篇笔记"）。
+2. Bot 调用 `insert_obsidian_attachment`，把附件保存到 `attachments/`，并在笔记末尾追加：
+   - 图片：`![[attachments/20261030-120000-abc123.png]]`
+   - 其它文件：`[[attachments/xxx.pdf]]`
+3. 可选 `caption` 会写在附件下方。
+
+限制与安全：
+
+- **只读取当前消息里的附件**，不接受模型传入的本地路径或 URL，避免被提示注入诱导读取服务器文件。
+- 图片按文件头识别 PNG/JPEG/GIF/WebP；其它格式会拒绝。
+- 单个附件受 `max_attachment_mb` 限制（默认 10MB）。
+- 重名不会覆盖：文件名自动带时间戳 + 随机后缀。
+- 需要 `write_enabled: true`。
 
 ## 软删除与回收站（v1.3.0）
 
@@ -145,6 +165,7 @@ v1.1.0 收紧了默认值，v1.3.3 又移除了默认用户名，升级后请检
 - 全文索引：`data/plugin_data/astrbot_plugin_obsidian_sync/index.sqlite3`（可删，重启会重建）
 - 审计日志：`data/plugin_data/astrbot_plugin_obsidian_sync/audit.jsonl`（超过 2MB 自动轮转）
 - 回收站：`data/plugin_data/astrbot_plugin_obsidian_sync/trash/<时间戳>/`（软删除的笔记，不在 vault 内）
+- 附件：`vault/attachments/`（`attachment_dir` 可改；会被 Remotely Save 一起同步）
 - 卸载插件不会自动删除以上目录，请自行备份。
 
 ## 安全建议
@@ -153,6 +174,7 @@ v1.1.0 收紧了默认值，v1.3.3 又移除了默认用户名，升级后请检
 - 只读场景请开启 `read_only`，把 WebDAV 变成下载源。
 - 群聊场景建议 `private_only: true`，并配置 `allowed_users`。
 - 不希望 Bot 删除任何东西时，保持 `delete_enabled: false`（默认）；即使开启也只能软删除。
+- 附件插入只接受聊天里发送的文件，不会去下载模型给的任意 URL。
 - 定期备份 `vault/`、`history/` 与 `trash/`。
 
 ## 开发与测试
@@ -161,6 +183,7 @@ v1.1.0 收紧了默认值，v1.3.3 又移除了默认用户名，升级后请检
 main.py            插件入口、WebDAV 生命周期、LLM 工具、history/undo
 vault_paths.py     路径解析/检索（纯标准库，可单测）
 note_index.py      SQLite FTS5 索引（增量同步、LIKE 回退）
+attachments.py     附件保存、图片格式识别、嵌入语法
 webdav_guard.py    WSGI 中间件：越界、只读、敏感写入
 tests/             unittest 用例
 ```
