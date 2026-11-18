@@ -2,7 +2,7 @@
 
 把 **Obsidian** 接进 **AstrBot**：手机、电脑自动双向同步你的笔记，同时让 AI 帮你搜索、整理、记住每一篇笔记。
 
-> **v1.4.0** 新增附件插入（聊天里的图片/文件保存到 `attachments/` 并插入笔记）。**v1.3.3** 移除默认用户名 `neko`，改为自动生成 `vault_xxxxxxxx`（升级后需更新 Remotely Save 用户名）。**v1.3.2** 起作者改为 `maolbsMd`（plugin_id 随之变化，功能不变）。**v1.3.1** 起展示名改为「Obsidian 第二大脑」。**v1.3.0** 新增软删除与回收站；**v1.2.0** 新增全文索引、历史撤销、自检与审计；**v1.1.0** 是安全版本。从 v1.0.x 升级请先看 [从 v1.0.x 升级](#从-v10x-升级)。
+> **v1.4.1** 分离 WebDAV 挂载目录与工具读写目录，新增「库名称」`vault_name`。**v1.4.0** 新增附件插入（聊天里的图片/文件保存到 `attachments/` 并插入笔记）。**v1.3.3** 移除默认用户名 `neko`，改为自动生成 `vault_xxxxxxxx`（升级后需更新 Remotely Save 用户名）。**v1.3.2** 起作者改为 `maolbsMd`（plugin_id 随之变化，功能不变）。**v1.3.1** 起展示名改为「Obsidian 第二大脑」。**v1.3.0** 新增软删除与回收站；**v1.2.0** 新增全文索引、历史撤销、自检与审计；**v1.1.0** 是安全版本。从 v1.0.x 升级请先看 [从 v1.0.x 升级](#从-v10x-升级)。
 
 ## 核心特性
 
@@ -56,8 +56,8 @@ git clone https://github.com/maolbsMd/astrbot_plugin_obsidian_sync.git
 | `port` | `6190` | WebDAV 端口 |
 | `username` | 自动生成 | 留空或旧默认 `neko` 时生成 `vault_xxxxxxxx` |
 | `password` | 空（自动生成） | 至少 12 位；`secret` 字段在面板中遮罩显示 |
-| `vault_path` | 空 | 留空 = `data/plugin_data/astrbot_plugin_obsidian_sync/vault`，也可填绝对路径 |
-| `vault_subdir` | 空 | 留空自动检测 `obsidian_vault` 子目录 |
+| `vault_path` | 空 | WebDAV 挂载目录；留空 = `data/plugin_data/astrbot_plugin_obsidian_sync/vault` |
+| `vault_name` | 空 | 库名称：工具读写目录 = `vault_path/库名称`；留空自动识别 `obsidian_vault` |
 | `auto_start` | `true` | 随 AstrBot 启动 |
 | `read_only` | `false` | WebDAV 只读模式 |
 | `write_enabled` | `true` | 是否允许 LLM 写入笔记 |
@@ -113,6 +113,17 @@ git clone https://github.com/maolbsMd/astrbot_plugin_obsidian_sync.git
 /obsidian restore <ID>      从回收站恢复
 /obsidian audit             查看最近 20 条工具调用记录
 ```
+
+## 目录结构与「库名称」（v1.4.1）
+
+- **WebDAV 挂载目录** = `vault_path`（默认 `.../vault`）。Remotely Save 的远程根目录指向这里。
+- **工具读写目录** = `vault_path/库名称`（`vault_name`）：
+  - 填 `obsidian_vault` → Bot 写到 `vault/obsidian_vault/`，和 Remotely Save 的子目录对齐；
+  - 留空 → 自动识别 `vault/obsidian_vault`（子目录有内容时），否则直接用挂载目录；
+  - 运行期间子目录才出现，下一次工具调用会自动切换，不需要重启。
+- 旧字段 `vault_subdir` 仍兼容，但已隐藏，建议统一用 `vault_name`。
+
+> 升级到 1.4.1 后，之前误写到挂载目录根部的笔记不会自动移动；需要同步的话，手动移进 `库名称/` 目录。
 
 ## 附件插入（v1.4.0）
 

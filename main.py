@@ -1,4 +1,4 @@
-"""Obsidian 第二大脑 · WebDAV 同步与 LLM 知识库插件（v1.4.0）。
+"""Obsidian 第二大脑 · WebDAV 同步与 LLM 知识库插件（v1.4.1）。
 
 安全基线：
 - 默认只监听 127.0.0.1，公网监听需要显式开启 allow_public_bind；
@@ -19,6 +19,9 @@ v1.3.0 新增：
 
 v1.4.0 新增：
 - insert_obsidian_attachment：把聊天里的图片/文件保存到 attachments/ 并插入笔记。
+
+v1.4.1 修复：
+- WebDAV 挂载目录与工具读写目录分离：挂载固定为 vault_path，笔记写到 vault_path/库名称。
 """
 
 from __future__ import annotations
@@ -127,7 +130,7 @@ def _is_loopback(host: str) -> bool:
     PLUGIN_NAME,
     "maolbsMd",
     "Obsidian 第二大脑：同步、索引与 AI 笔记工具",
-    "1.4.0",
+    "1.4.1",
 )
 class ObsidianSyncPlugin(Star):
     def __init__(self, context: Context, config: dict | None = None):
@@ -174,12 +177,22 @@ class ObsidianSyncPlugin(Star):
         self._write_lock = asyncio.Lock()
 
         self.vault_root = self._init_vault()
+        self.mount_root = self.vault_root
+        self.vault_name = (
+            str(self.config.get("vault_name") or "").strip()
+            or str(self.config.get("vault_subdir") or "").strip()
+        )
         self.root = self._init_root()
         self.password, self._password_generated = self._init_password()
         self.username, self._username_generated = self._init_username()
         self._apply_bind_policy()
 
-        logger.info("[ObsidianSync] 笔记库根目录: %s", self.root)
+        logger.info("[ObsidianSync] WebDAV 挂载目录: %s", self.mount_root)
+        logger.info(
+            "[ObsidianSync] 工具读写目录: %s（库名称: %s）",
+            self.root,
+            self.vault_name or "自动",
+        )
         logger.info(
             "[ObsidianSync] WebDAV 监听: %s:%s，用户: %s，模式: %s",
             self.host,
@@ -218,23 +231,60 @@ class ObsidianSyncPlugin(Star):
         return vault.resolve()
 
     def _init_root(self) -> Path:
-        subdir = str(self.config.get("vault_subdir") or "").strip()
-        try:
-            root = resolve_root(self.vault_root, subdir)
-        except (PathRejected, OSError) as exc:
-            logger.error(
-                "[ObsidianSync] vault_subdir=%r 不合法（%s），已回退到 %s",
-                subdir,
-                exc,
-                self.vault_root,
-            )
-            root = self.vault_root
+        if self.vault_name:
+            try:
+                root = resolve_root(self.mount_root, self.vault_name)
+            except (PathRejected, OSError) as exc:
+                logger.error(
+                    "[ObsidianSync] vault_name=%r 不合法（%s），已回退到 %s",
+                    self.vault_name,
+                    exc,
+                    self.mount_root,
+                )
+                root = self.mount_root
+        else:
+            root = self._auto_tool_root()
         try:
             root.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            logger.error("[ObsidianSync] 无法创建读写根目录 %s: %s", root, exc)
+            logger.error("[ObsidianSync] 无法创建读写目录 %s: %s", root, exc)
             self.auto_start = False
         return root
+
+    def _auto_tool_root(self) -> Path:
+        """未显式配置 vault_subdir 时，自动识别 Remotely Save 用的子目录。
+
+        只有子目录里已经有内容才切换，避免用户恰好建了一个空的 obsidian_vault
+        文件夹就把读写目录挪走。
+        """
+        nested = self.mount_root / "obsidian_vault"
+        if nested.is_dir():
+            try:
+                if next(nested.iterdir(), None) is not None:
+                    return nested.resolve()
+            except OSError:
+                pass
+        return self.mount_root
+
+    def _refresh_tool_root(self) -> None:
+        """运行期间动态校正工具读写目录（WebDAV 挂载目录保持不变）。"""
+        if self.vault_name:
+            return
+        candidate = self._auto_tool_root()
+        if candidate == self.root:
+            return
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning("[ObsidianSync] 切换读写目录失败: %s", exc)
+            return
+        logger.warning(
+            "[ObsidianSync] 工具读写目录切换为 %s（WebDAV 仍挂载 %s）",
+            candidate,
+            self.mount_root,
+        )
+        self.root = candidate
+        self._last_index_sync = 0.0
 
     def _init_password(self) -> tuple[str, bool]:
         password = str(self.config.get("password") or "")
@@ -320,17 +370,19 @@ class ObsidianSyncPlugin(Star):
 
     def _make_provider_mapping(self) -> dict:
         if not self.read_only:
-            return {"/": str(self.root)}
+            return {"/": str(self.mount_root)}
         try:
             from wsgidav.fs_dav_provider import FilesystemProvider
 
             try:
-                provider = FilesystemProvider(str(self.root), readonly=True, follow_symlinks=False)
+                provider = FilesystemProvider(
+                    str(self.mount_root), readonly=True, follow_symlinks=False
+                )
             except TypeError:  # pragma: no cover - 兼容旧版本 wsgidav
-                provider = FilesystemProvider(str(self.root), readonly=True)
+                provider = FilesystemProvider(str(self.mount_root), readonly=True)
             return {"/": provider}
         except ImportError:  # pragma: no cover - 依赖缺失时交给 WsgiDAVApp 报错
-            return {"/": str(self.root)}
+            return {"/": str(self.mount_root)}
 
     def _build_app(self):
         from wsgidav.wsgidav_app import WsgiDAVApp
@@ -358,7 +410,7 @@ class ObsidianSyncPlugin(Star):
             "logging": {"enable": False},
         }
         app = WsgiDAVApp(dav_config)
-        return DavGuard(app, self.root, self.read_only)
+        return DavGuard(app, self.mount_root, self.read_only)
 
     def _start_webdav_service(self) -> None:
         with self._server_lock:
@@ -367,8 +419,8 @@ class ObsidianSyncPlugin(Star):
             if self.server_thread and self.server_thread.is_alive():
                 logger.warning("[ObsidianSync] WebDAV 线程仍在启动/退出中，请稍后重试。")
                 return
-            if not self.root.is_dir():
-                logger.error("[ObsidianSync] 笔记库目录不存在，无法启动: %s", self.root)
+            if not self.mount_root.is_dir():
+                logger.error("[ObsidianSync] WebDAV 挂载目录不存在，无法启动: %s", self.mount_root)
                 return
 
             def run_server() -> None:
@@ -383,7 +435,7 @@ class ObsidianSyncPlugin(Star):
                         "[ObsidianSync] WebDAV 服务已启动: http://%s:%s，挂载目录: %s",
                         self.host,
                         self.port,
-                        self.root,
+                        self.mount_root,
                     )
                     server.serve()
                 except Exception as exc:
@@ -424,6 +476,7 @@ class ObsidianSyncPlugin(Star):
     # ================= 状态与自检 =================
 
     def _status_text(self) -> str:
+        self._refresh_tool_root()
         notes = count_notes(self.root)
         bind = f"{self.host}:{self.port}"
         if self._public_bind_blocked:
@@ -441,7 +494,9 @@ class ObsidianSyncPlugin(Star):
                 f"服务: {'🟢 运行中' if self.is_running else '🔴 已停止'}",
                 f"监听: {bind}",
                 f"模式: {'只读' if self.read_only else '可写'}",
-                f"根目录: {self.root}",
+                f"WebDAV 挂载: {self.mount_root}",
+                f"库名称: {self.vault_name or '（自动识别）'}",
+                f"工具目录: {self.root}",
                 f"笔记数: {notes}",
                 f"索引: {index_line}",
                 f"认证用户: {self.username}",
@@ -457,6 +512,7 @@ class ObsidianSyncPlugin(Star):
         return self.host
 
     def _doctor_sync(self) -> str:
+        self._refresh_tool_root()
         lines = ["🩺 Obsidian Sync 自检", "--------------------------"]
         lines.append(
             f"{'✅' if self.is_running else '❌'} WebDAV 服务: "
@@ -477,8 +533,10 @@ class ObsidianSyncPlugin(Star):
             f"ℹ️ 模式: {'只读' if self.read_only else '可写'}，"
             f"工具写入 {'开启' if self.write_enabled else '关闭'}"
         )
+        lines.append(f"ℹ️ WebDAV 挂载: {self.mount_root}")
+        lines.append(f"ℹ️ 库名称: {self.vault_name or '（自动识别）'}，工具目录: {self.root}")
 
-        plugins = self.root / ".obsidian" / "plugins"
+        plugins = self.mount_root / ".obsidian" / "plugins"
         if plugins.is_dir():
             lines.append(
                 "⚠️ 库内存在 .obsidian/plugins：WebDAV 写入该目录会被 403，"
@@ -538,6 +596,7 @@ class ObsidianSyncPlugin(Star):
         parts = (event.message_str or "").strip().split()
         sub = parts[1].lower() if len(parts) > 1 else "status"
         argument = " ".join(parts[2:]).strip()
+        self._refresh_tool_root()
 
         if sub == "status":
             yield event.plain_result(await asyncio.to_thread(self._status_text))
@@ -1055,6 +1114,7 @@ class ObsidianSyncPlugin(Star):
         try:
             if not self._tool_allowed(event):
                 return DENIED_TOOL
+            self._refresh_tool_root()
             if not keyword:
                 return "关键词不能为空，请给出要搜索的词。"
 
@@ -1095,6 +1155,7 @@ class ObsidianSyncPlugin(Star):
         try:
             if not self._tool_allowed(event):
                 return DENIED_TOOL
+            self._refresh_tool_root()
             limit = _clamp_int(max_lines, 200, 1, self.max_read_lines)
             try:
                 target = await asyncio.to_thread(resolve_note_path, self.root, note_path)
@@ -1140,6 +1201,7 @@ class ObsidianSyncPlugin(Star):
         try:
             if not self._tool_allowed(event):
                 return DENIED_TOOL
+            self._refresh_tool_root()
             if not self.write_enabled:
                 return "写入功能未启用，请在插件配置中开启 write_enabled。"
             if mode not in {"append", "overwrite"}:
@@ -1182,6 +1244,7 @@ class ObsidianSyncPlugin(Star):
         try:
             if not self._tool_allowed(event):
                 return DENIED_TOOL
+            self._refresh_tool_root()
             try:
                 items = await asyncio.to_thread(self._list_notes_sync, subfolder)
             except PathRejected as exc:
@@ -1210,6 +1273,7 @@ class ObsidianSyncPlugin(Star):
         try:
             if not self._tool_allowed(event):
                 return DENIED_TOOL
+            self._refresh_tool_root()
             if not self.write_enabled or not self.delete_enabled:
                 return "删除功能未启用，请在插件配置中开启 delete_enabled（并保持 write_enabled）。"
             try:
@@ -1248,6 +1312,7 @@ class ObsidianSyncPlugin(Star):
         try:
             if not self._tool_allowed(event):
                 return DENIED_TOOL
+            self._refresh_tool_root()
             if not self.write_enabled:
                 return "写入功能未启用，无法插入附件。"
             try:

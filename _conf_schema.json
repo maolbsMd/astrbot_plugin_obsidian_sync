@@ -36,11 +36,18 @@
     "default": "",
     "hint": "留空表示 data/plugin_data/astrbot_plugin_obsidian_sync/vault。也可填宿主机已有库的绝对路径。"
   },
+  "vault_name": {
+    "type": "string",
+    "description": "库名称（笔记写入目录）",
+    "default": "",
+    "hint": "工具读写目录 = vault_path/库名称。填 obsidian_vault 就写到挂载目录下的同名子目录，与 Remotely Save 对齐；留空则自动识别，没有子目录就直接写挂载目录。"
+  },
   "vault_subdir": {
     "type": "string",
-    "description": "笔记库子目录",
+    "description": "（旧字段）笔记库子目录",
     "default": "",
-    "hint": "留空时自动检测 obsidian_vault 子目录（兼容 Remotely Save 子目录模式）；用其它子目录名时在此显式填写。"
+    "invisible": true,
+    "hint": "已由 vault_name 取代，仅用于兼容旧配置。"
   },
   "auto_start": {
     "type": "bool",

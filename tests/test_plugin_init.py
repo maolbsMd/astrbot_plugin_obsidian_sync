@@ -422,6 +422,45 @@ class PluginInitTest(unittest.TestCase):
         result = asyncio.run(self.plugin.insert_obsidian_attachment(event, "notes/a.md"))
         self.assertIn("暂不支持", result)
 
+    def test_webdav_mount_and_tool_root_are_separate(self):
+        mount = StarTools.data_root / "astrbot_plugin_obsidian_sync" / "vault"
+        nested = mount / "obsidian_vault"
+        nested.mkdir(parents=True, exist_ok=True)
+        (nested / "note.md").write_text("x", encoding="utf-8")
+
+        plugin = plugin_module.ObsidianSyncPlugin(object(), self.config)
+        self.assertEqual(plugin.mount_root, mount.resolve())
+        self.assertEqual(plugin.root, nested.resolve())
+        self.assertEqual(plugin._make_provider_mapping()["/"], str(mount.resolve()))
+
+    def test_explicit_vault_name(self):
+        config = dict(self.config, vault_name="notes")
+        plugin = plugin_module.ObsidianSyncPlugin(object(), config)
+        self.assertEqual(plugin.root, (plugin.mount_root / "notes").resolve())
+        self.assertTrue(plugin.root.is_dir())
+
+    def test_legacy_vault_subdir_still_works(self):
+        config = dict(self.config, vault_subdir="legacy")
+        plugin = plugin_module.ObsidianSyncPlugin(object(), config)
+        self.assertEqual(plugin.root, (plugin.mount_root / "legacy").resolve())
+
+    def test_tool_root_switches_after_nested_appears(self):
+        self.assertEqual(self.plugin.root, self.plugin.mount_root)
+        nested = self.plugin.mount_root / "obsidian_vault"
+        nested.mkdir(parents=True, exist_ok=True)
+        (nested / "note.md").write_text("x", encoding="utf-8")
+
+        self.plugin._refresh_tool_root()
+        self.assertEqual(self.plugin.root, nested.resolve())
+        self.assertEqual(self.plugin._make_provider_mapping()["/"], str(self.plugin.mount_root))
+
+    def test_refresh_ignores_empty_nested_dir(self):
+        nested = self.plugin.mount_root / "obsidian_vault"
+        nested.mkdir(parents=True, exist_ok=True)
+
+        self.plugin._refresh_tool_root()
+        self.assertEqual(self.plugin.root, self.plugin.mount_root)
+
 
 if __name__ == "__main__":
     unittest.main()

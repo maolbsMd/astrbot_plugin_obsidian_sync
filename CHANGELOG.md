@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.4.1
+
+### Fixed
+
+- **WebDAV 挂载目录和工具读写目录分离**：WebDAV 始终挂载 `vault_path`；`search` / `read` / `write` / `list` / `delete` / `attach` 写到 `vault_path/库名称`，不再出现"Bot 写到 `obsidian_vault/` 外面"的问题。
+- 新增 `vault_name`（库名称）配置：填 `obsidian_vault` 就与 Remotely Save 的子目录对齐；留空自动识别 `obsidian_vault`（有内容时），否则直接用挂载目录。
+- 运行期间 `obsidian_vault/` 才出现时，下一次工具调用会自动切换读写目录，不再需要重启插件。
+- 旧字段 `vault_subdir` 保留兼容，但已在面板隐藏，建议改用 `vault_name`。
+
+### Notes
+
+- 之前写到挂载目录根部的笔记不会自动移动；如需同步，请手动移进 `库名称/` 目录（例如 `vault/obsidian_vault/`）。
+
 ## 1.4.0
 
 ### Added
